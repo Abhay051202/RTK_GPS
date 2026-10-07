@@ -23,7 +23,9 @@ import {
   ChevronRight,
   ChevronLeft,
   Navigation,
-  RotateCcw
+  RotateCcw,
+  Radio,
+  Sliders
 } from 'lucide-react';
 import { 
   calcDistanceMeters, 
@@ -111,7 +113,6 @@ export function App() {
   const [mapType, setMapType] = useState('satellite');
   const [copied, setCopied] = useState(false);
   const [isSimulating, setIsSimulating] = useState(false);
-  const [showApiSnippet, setShowApiSnippet] = useState(false);
   const [showSurveySidebar, setShowSurveySidebar] = useState(true);
   const [showTelemetryHUD, setShowTelemetryHUD] = useState(true);
   const [showContainerBays, setShowContainerBays] = useState(true);
@@ -129,7 +130,23 @@ export function App() {
     color: "#00f0ff"
   });
 
+  // Live Rover Path Recording States
+  const [isRecordingRover, setIsRecordingRover] = useState(false);
+  const isRecordingRoverRef = useRef(false);
+  const [recordIntervalMeters, setRecordIntervalMeters] = useState(0.5); // auto-drop point every 0.5m
+  const recordIntervalMetersRef = useRef(0.5);
+  const recordedRoverPointsRef = useRef([]);
+
   const wsRef = useRef(null);
+
+  // Sync ref with state
+  useEffect(() => {
+    isRecordingRoverRef.current = isRecordingRover;
+  }, [isRecordingRover]);
+
+  useEffect(() => {
+    recordIntervalMetersRef.current = recordIntervalMeters;
+  }, [recordIntervalMeters]);
 
   // Show transient toast notification
   const showToast = (msg, duration = 3000) => {
@@ -173,6 +190,49 @@ export function App() {
             if (data.rover) {
               setRover(data.rover);
               setIsSimulating(Boolean(data.rover.is_simulated));
+
+              // AUTOMATIC MOVEMENT RECORDING FOR ROVER
+              if (isRecordingRoverRef.current && data.rover.latitude && data.rover.longitude) {
+                const lat = data.rover.latitude;
+                const lng = data.rover.longitude;
+                const pts = recordedRoverPointsRef.current;
+
+                if (pts.length === 0) {
+                  // Anchor initial point
+                  const p0 = {
+                    name: `ROVER_PT_001`,
+                    lat: Number(lat.toFixed(8)),
+                    lng: Number(lng.toFixed(8)),
+                    alt: Number((data.rover.altitude || 14.0).toFixed(3)),
+                    speed: data.rover.speed_kmh || 0.0,
+                    fixQuality: data.rover.fix_status_text || "RTK FIXED (cm accuracy)",
+                    isRtkLogged: true,
+                    timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19)
+                  };
+                  pts.push(p0);
+                  setCurrentDrawingPoints([p0]);
+                } else {
+                  const last = pts[pts.length - 1];
+                  const dist = calcDistanceMeters(last.lat, last.lng, lat, lng);
+                  const threshold = recordIntervalMetersRef.current;
+
+                  // Append point when rover moves beyond threshold (or 0.2m min if continuous)
+                  if (dist >= (threshold > 0 ? threshold : 0.25)) {
+                    const nextPt = {
+                      name: `ROVER_PT_${String(pts.length + 1).padStart(3, '0')}`,
+                      lat: Number(lat.toFixed(8)),
+                      lng: Number(lng.toFixed(8)),
+                      alt: Number((data.rover.altitude || 14.0).toFixed(3)),
+                      speed: data.rover.speed_kmh || 0.0,
+                      fixQuality: data.rover.fix_status_text || "RTK FIXED (cm accuracy)",
+                      isRtkLogged: true,
+                      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19)
+                    };
+                    pts.push(nextPt);
+                    setCurrentDrawingPoints([...pts]);
+                  }
+                }
+              }
             }
           } catch (err) {
             console.error(err);
@@ -212,7 +272,60 @@ export function App() {
     }
   };
 
-  // Handle map click when in drawing mode
+  // --- LIVE ROVER MOVEMENT TRACKING CONTROLS ---
+
+  // Start Live Rover Path Recording
+  const handleStartRoverTracking = () => {
+    const lat = rover.latitude || base.latitude;
+    const lng = rover.longitude || base.longitude;
+    const alt = rover.altitude || base.altitude || 14.0;
+
+    if (!lat || !lng) {
+      showToast("❌ No Rover or Base RTK fix found. Please connect rover or start simulation.");
+      return;
+    }
+
+    // Anchor first point immediately
+    const initialPt = {
+      name: `ROVER_PT_001`,
+      lat: Number(lat.toFixed(8)),
+      lng: Number(lng.toFixed(8)),
+      alt: Number(alt.toFixed(3)),
+      speed: rover.speed_kmh || 0.0,
+      fixQuality: rover.fix_status_text || "RTK FIXED (cm accuracy)",
+      isRtkLogged: true,
+      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19)
+    };
+
+    recordedRoverPointsRef.current = [initialPt];
+    setCurrentDrawingPoints([initialPt]);
+    setIsRecordingRover(true);
+    isRecordingRoverRef.current = true;
+    setIsDrawingMode(true);
+
+    showToast(`▶ ROVER TRACKING STARTED! Walk or drive with rover to calculate movement line.`);
+  };
+
+  // Stop Live Rover Recording & Prompt Save
+  const handleStopRoverTracking = () => {
+    setIsRecordingRover(false);
+    isRecordingRoverRef.current = false;
+
+    if (currentDrawingPoints.length < 2) {
+      showToast("⚠️ Rover moved less than 2 points. Move further or keep tracking.");
+      return;
+    }
+
+    const defaultName = `Rover Track ${String(surveyLines.length + 1).padStart(2, '0')}`;
+    setNewLineForm({
+      name: defaultName,
+      category: "Container Stack Bay",
+      color: "#f59e0b"
+    });
+    setShowSaveModal(true);
+  };
+
+  // Manual point click on map
   const handleMapClick = (latlng) => {
     if (!isDrawingMode) return;
 
@@ -226,10 +339,11 @@ export function App() {
       timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19)
     };
 
+    recordedRoverPointsRef.current = [...currentDrawingPoints, newPt];
     setCurrentDrawingPoints(prev => [...prev, newPt]);
   };
 
-  // Log current physical RTK hardware position into the active survey line
+  // Log single RTK Point manually
   const handleLogCurrentRtkPoint = () => {
     const lat = rover.latitude || base.latitude;
     const lng = rover.longitude || base.longitude;
@@ -251,46 +365,30 @@ export function App() {
       timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19)
     };
 
-    if (!isDrawingMode) {
-      setIsDrawingMode(true);
-      setCurrentDrawingPoints([newPt]);
-      showToast(`📍 Started new survey line at RTK position (${lat.toFixed(6)}°, ${lng.toFixed(6)}°)`);
-    } else {
-      setCurrentDrawingPoints(prev => [...prev, newPt]);
-      showToast(`📌 Added RTK Point #${currentDrawingPoints.length + 1} with cm-level accuracy!`);
-    }
+    recordedRoverPointsRef.current = [...currentDrawingPoints, newPt];
+    setCurrentDrawingPoints(prev => [...prev, newPt]);
+    showToast(`📌 Dropped Waypoint #${currentDrawingPoints.length + 1} (${lat.toFixed(6)}°, ${lng.toFixed(6)}°)`);
   };
 
   // Undo last point
   const handleUndoPoint = () => {
     if (currentDrawingPoints.length === 0) return;
-    setCurrentDrawingPoints(prev => prev.slice(0, -1));
+    const updated = currentDrawingPoints.slice(0, -1);
+    recordedRoverPointsRef.current = updated;
+    setCurrentDrawingPoints(updated);
   };
 
   // Cancel drawing
   const handleCancelDrawing = () => {
     setIsDrawingMode(false);
+    setIsRecordingRover(false);
+    isRecordingRoverRef.current = false;
+    recordedRoverPointsRef.current = [];
     setCurrentDrawingPoints([]);
   };
 
-  // Prompt save line modal
-  const handleFinishDrawing = () => {
-    if (currentDrawingPoints.length < 2) {
-      showToast("⚠️ A line requires at least 2 points. Click on the map or log RTK points.");
-      return;
-    }
-
-    const defaultName = `Bay Row ${String(surveyLines.length + 1).padStart(2, '0')}`;
-    setNewLineForm({
-      name: defaultName,
-      category: "Container Stack Bay",
-      color: ["#00f0ff", "#10b981", "#f59e0b", "#ec4899", "#8b5cf6"][surveyLines.length % 5]
-    });
-    setShowSaveModal(true);
-  };
-
-  // Confirm save line
-  const handleSaveConfirmed = () => {
+  // Save current line
+  const handleSaveConfirmed = (andDownloadExcel = false) => {
     const lineId = `LINE_${String(Date.now()).slice(-5)}`;
     const lineObj = {
       id: lineId,
@@ -305,10 +403,27 @@ export function App() {
     syncLinesToBackend(updated);
 
     setIsDrawingMode(false);
+    setIsRecordingRover(false);
+    isRecordingRoverRef.current = false;
+    recordedRoverPointsRef.current = [];
     setCurrentDrawingPoints([]);
     setShowSaveModal(false);
     setActiveLineId(lineId);
-    showToast(`✅ Saved line "${lineObj.name}" with ${lineObj.points.length} vertices!`);
+
+    if (andDownloadExcel) {
+      try {
+        const fileName = exportSurveyToExcel([lineObj], {
+          yardName: lineObj.name.replace(/\s+/g, '_'),
+          slotSpacing: 6.1
+        });
+        showToast(`✅ Saved & Downloaded Excel: ${fileName}!`);
+      } catch (err) {
+        window.open('http://127.0.0.1:8000/api/survey/export-excel', '_blank');
+        showToast(`✅ Saved & Downloaded Excel via Python backend!`);
+      }
+    } else {
+      showToast(`✅ Saved line "${lineObj.name}" (${lineObj.points.length} points)!`);
+    }
   };
 
   // Delete line
@@ -332,7 +447,7 @@ export function App() {
   // Export to Excel (.xlsx) with cm-level accuracy
   const handleExportExcel = () => {
     if (surveyLines.length === 0) {
-      showToast("⚠️ No surveyed lines to export. Draw a line first!");
+      showToast("⚠️ No surveyed lines to export. Draw or record a line first!");
       return;
     }
 
@@ -344,7 +459,6 @@ export function App() {
       showToast(`📊 Downloaded Excel: ${fileName} (Centimeter Precision)`);
     } catch (err) {
       console.error(err);
-      // Fallback to backend python endpoint
       window.open('http://127.0.0.1:8000/api/survey/export-excel', '_blank');
       showToast("📊 Generated Excel via Python backend!");
     }
@@ -358,13 +472,6 @@ export function App() {
       currentDrawingPoints[i+1].lat, currentDrawingPoints[i+1].lng
     );
   }
-
-  const handleCopyCoords = () => {
-    const text = `BASE: ${base.latitude.toFixed(6)}, ${base.longitude.toFixed(6)}`;
-    navigator.clipboard?.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
 
   const handleToggleSimulation = async () => {
     const nextState = !isSimulating;
@@ -474,47 +581,72 @@ export function App() {
 
         {/* Center / Right: Primary Survey Action Buttons */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {/* 1. DRAW LINE TOOL */}
+          {/* 🌟 1. PRIMARY ROVER LIVE TRACKING BUTTON */}
+          {!isRecordingRover ? (
+            <button
+              onClick={handleStartRoverTracking}
+              title="Start recording live movement as the Rover walks in the yard"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                backgroundColor: '#f59e0b',
+                color: '#000000',
+                border: 'none',
+                padding: '7px 16px',
+                borderRadius: '6px',
+                fontSize: '13px',
+                fontWeight: 700,
+                cursor: 'pointer',
+                boxShadow: '0 0 16px rgba(245, 158, 11, 0.6)',
+                animation: 'pulseGlow 2s infinite'
+              }}
+            >
+              <Play size={14} fill="#000" />
+              <span>▶ START ROVER LIVE RECORDING</span>
+            </button>
+          ) : (
+            <button
+              onClick={handleStopRoverTracking}
+              title="Stop recording and save the surveyed path"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                backgroundColor: '#ef4444',
+                color: '#ffffff',
+                border: 'none',
+                padding: '7px 16px',
+                borderRadius: '6px',
+                fontSize: '13px',
+                fontWeight: 700,
+                cursor: 'pointer',
+                boxShadow: '0 0 18px rgba(239, 68, 68, 0.7)'
+              }}
+            >
+              <Square size={14} fill="#fff" />
+              <span>⏹ STOP & SAVE LINE ({liveDrawingDist.toFixed(1)}m)</span>
+            </button>
+          )}
+
+          {/* 2. MANUAL CLICK-TO-DRAW TOOL */}
           <button
             onClick={() => {
-              if (isDrawingMode) {
+              if (isDrawingMode && !isRecordingRover) {
                 handleCancelDrawing();
               } else {
                 setIsDrawingMode(true);
                 setCurrentDrawingPoints([]);
-                showToast("✏️ Click on map to add points, or walk and tap 'Log RTK Point'");
+                showToast("✏️ Click anywhere on the map to place vertices");
               }
             }}
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: '6px',
-              backgroundColor: isDrawingMode ? '#ef4444' : '#0284c7',
+              backgroundColor: (isDrawingMode && !isRecordingRover) ? '#ef4444' : '#1e293b',
               color: '#ffffff',
-              border: 'none',
-              padding: '6px 14px',
-              borderRadius: '6px',
-              fontSize: '12px',
-              fontWeight: 600,
-              cursor: 'pointer',
-              boxShadow: isDrawingMode ? '0 0 12px rgba(239, 68, 68, 0.5)' : '0 0 10px rgba(2, 132, 199, 0.3)'
-            }}
-          >
-            {isDrawingMode ? <X size={14} /> : <Crosshair size={14} />}
-            <span>{isDrawingMode ? "Exit Drawing" : "✏️ Draw Yard Line"}</span>
-          </button>
-
-          {/* 2. LOG RTK POINT FROM PHYSICAL CHIP */}
-          <button
-            onClick={handleLogCurrentRtkPoint}
-            title="Log the physical RTK Base/Rover coordinates into the survey line"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              backgroundColor: 'rgba(16, 185, 129, 0.2)',
-              color: '#34d399',
-              border: '1px solid rgba(16, 185, 129, 0.5)',
+              border: '1px solid rgba(255, 255, 255, 0.15)',
               padding: '6px 12px',
               borderRadius: '6px',
               fontSize: '12px',
@@ -522,8 +654,8 @@ export function App() {
               cursor: 'pointer'
             }}
           >
-            <Navigation size={14} />
-            <span>📌 Log RTK Point</span>
+            <Crosshair size={14} />
+            <span>{(isDrawingMode && !isRecordingRover) ? "Exit Drawing" : "Manual Map Draw"}</span>
           </button>
 
           {/* 3. EXPORT EXCEL (.xlsx) WITH CM ACCURACY */}
@@ -628,15 +760,134 @@ export function App() {
           fontSize: '12px',
           fontWeight: 600,
           boxShadow: '0 8px 24px rgba(0, 0, 0, 0.7)',
-          zIndex: 2000,
-          animation: 'fadeIn 0.2s ease-out'
+          zIndex: 2000
         }}>
           {notification}
         </div>
       )}
 
-      {/* 2. DRAWING MODE ACTION BANNER (When Active) */}
-      {isDrawingMode && (
+      {/* 2. LIVE ROVER MOVEMENT RECORDING BANNER */}
+      {isRecordingRover && (
+        <div style={{
+          backgroundColor: '#78350f',
+          borderBottom: '2px solid #f59e0b',
+          padding: '8px 20px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          zIndex: 950,
+          fontSize: '12px'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <span style={{ color: '#fbbf24', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{
+                width: '10px',
+                height: '10px',
+                borderRadius: '50%',
+                backgroundColor: '#ef4444',
+                animation: 'recordBlink 1s infinite'
+              }}></span>
+              RECORDING ROVER MOVEMENT LIVE:
+            </span>
+            <span style={{ color: '#fef3c7' }}>
+              Walk or drive along the container row. Live coordinates are plotted automatically with centimeter accuracy.
+            </span>
+
+            {/* Live Stats Pill */}
+            <div style={{
+              display: 'flex',
+              gap: '12px',
+              backgroundColor: '#451a03',
+              padding: '4px 12px',
+              borderRadius: '4px',
+              border: '1px solid #b45309'
+            }}>
+              <span>Points: <strong style={{ color: '#fff' }}>{currentDrawingPoints.length}</strong></span>
+              <span>Distance: <strong style={{ color: '#4ade80', fontFamily: 'monospace', fontSize: '13px' }}>{liveDrawingDist.toFixed(2)} m</strong> ({(liveDrawingDist * 3.28084).toFixed(1)} ft)</span>
+              <span>Speed: <strong style={{ color: '#38bdf8' }}>{rover.speed_kmh ? rover.speed_kmh.toFixed(1) : "0.0"} km/h</strong></span>
+              <span>Est. 20ft Bays: <strong style={{ color: '#fbbf24' }}>~{Math.floor(liveDrawingDist / 6.1)}</strong></span>
+            </div>
+
+            {/* Sampling Interval Selector */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#fde68a', fontSize: '11px' }}>
+              <span>Drop Point Every:</span>
+              <select
+                value={recordIntervalMeters}
+                onChange={(e) => setRecordIntervalMeters(Number(e.target.value))}
+                style={{
+                  backgroundColor: '#451a03',
+                  color: '#fff',
+                  border: '1px solid #b45309',
+                  borderRadius: '4px',
+                  padding: '2px 6px',
+                  fontSize: '11px',
+                  cursor: 'pointer'
+                }}
+              >
+                <option value={0.25}>0.25 meters (Very High Density)</option>
+                <option value={0.5}>0.5 meters (Recommended)</option>
+                <option value={1.0}>1.0 meter (Standard)</option>
+                <option value={2.0}>2.0 meters (Coarse)</option>
+                <option value={0}>Continuous (Every GNSS Fix)</option>
+              </select>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              onClick={handleLogCurrentRtkPoint}
+              title="Force drop a waypoint right now"
+              style={{
+                backgroundColor: '#92400e',
+                color: '#fff',
+                border: '1px solid #d97706',
+                padding: '5px 10px',
+                borderRadius: '4px',
+                fontSize: '11px',
+                fontWeight: 600,
+                cursor: 'pointer'
+              }}
+            >
+              📌 Drop Waypoint
+            </button>
+
+            <button
+              onClick={handleStopRoverTracking}
+              style={{
+                backgroundColor: '#10b981',
+                color: '#ffffff',
+                border: 'none',
+                padding: '6px 14px',
+                borderRadius: '4px',
+                fontSize: '12px',
+                fontWeight: 800,
+                cursor: 'pointer',
+                boxShadow: '0 0 10px rgba(16, 185, 129, 0.5)'
+              }}
+            >
+              ⏹ Finish & Save Line
+            </button>
+
+            <button
+              onClick={handleCancelDrawing}
+              style={{
+                backgroundColor: '#ef4444',
+                color: '#fff',
+                border: 'none',
+                padding: '6px 10px',
+                borderRadius: '4px',
+                fontSize: '11px',
+                cursor: 'pointer'
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 3. MANUAL DRAWING MODE BANNER (When Active but not recording rover) */}
+      {(isDrawingMode && !isRecordingRover) && (
         <div style={{
           backgroundColor: '#1e293b',
           borderBottom: '2px solid #0284c7',
@@ -649,10 +900,10 @@ export function App() {
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
             <span style={{ color: '#38bdf8', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <Crosshair size={15} /> DRAWING MODE ACTIVE:
+              <Crosshair size={15} /> MANUAL MAP DRAWING:
             </span>
             <span style={{ color: '#cbd5e1' }}>
-              Click anywhere on the map to place vertices, or carry your RTK rover and tap <strong>Log RTK Point</strong>.
+              Click on the map to add points, or click <strong>Start Rover Live Recording</strong> to draw via physical walking.
             </span>
             <div style={{
               display: 'flex',
@@ -663,7 +914,7 @@ export function App() {
               border: '1px solid rgba(255,255,255,0.1)'
             }}>
               <span>Points: <strong style={{ color: '#fff' }}>{currentDrawingPoints.length}</strong></span>
-              <span>Length: <strong style={{ color: '#34d399', fontFamily: 'monospace' }}>{liveDrawingDist.toFixed(2)} m</strong> ({(liveDrawingDist * 3.28084).toFixed(1)} ft)</span>
+              <span>Length: <strong style={{ color: '#34d399', fontFamily: 'monospace' }}>{liveDrawingDist.toFixed(2)} m</strong></span>
               <span>Est. 20ft Bays: <strong style={{ color: '#fbbf24' }}>{Math.floor(liveDrawingDist / 6.1)}</strong></span>
             </div>
           </div>
@@ -689,7 +940,18 @@ export function App() {
             </button>
 
             <button
-              onClick={handleFinishDrawing}
+              onClick={() => {
+                if (currentDrawingPoints.length < 2) {
+                  showToast("⚠️ Add at least 2 points to complete a line.");
+                  return;
+                }
+                setNewLineForm({
+                  name: `Bay Row ${String(surveyLines.length + 1).padStart(2, '0')}`,
+                  category: "Container Stack Bay",
+                  color: "#00f0ff"
+                });
+                setShowSaveModal(true);
+              }}
               disabled={currentDrawingPoints.length < 2}
               style={{
                 display: 'flex',
@@ -726,7 +988,7 @@ export function App() {
         </div>
       )}
 
-      {/* 3. MAIN WORKSPACE: MAP & SIDEBAR */}
+      {/* 4. MAIN WORKSPACE: MAP & SIDEBAR */}
       <main style={{ flex: 1, position: 'relative', width: '100%', height: 'calc(100vh - 56px)', display: 'flex' }}>
         {/* Full-width Map View */}
         <div style={{ flex: 1, position: 'relative', height: '100%' }}>
@@ -756,7 +1018,7 @@ export function App() {
             }}>
               {/* CARD 1: BASE STATION ANCHOR */}
               <div style={{
-                width: '290px',
+                width: '300px',
                 backgroundColor: 'rgba(15, 23, 42, 0.94)',
                 backdropFilter: 'blur(10px)',
                 border: '1px solid rgba(0, 240, 255, 0.3)',
@@ -805,32 +1067,37 @@ export function App() {
                 </div>
               </div>
 
-              {/* CARD 2: ROVER TELEMETRY */}
+              {/* CARD 2: ROVER TELEMETRY & LIVE TRACKING ACTION */}
               <div style={{
-                width: '290px',
+                width: '300px',
                 backgroundColor: 'rgba(15, 23, 42, 0.94)',
                 backdropFilter: 'blur(10px)',
-                border: '1px solid rgba(245, 158, 11, 0.35)',
+                border: `1px solid ${isRecordingRover ? '#f59e0b' : 'rgba(245, 158, 11, 0.35)'}`,
                 borderRadius: '8px',
                 padding: '12px',
-                boxShadow: '0 8px 24px rgba(0, 0, 0, 0.5)'
+                boxShadow: isRecordingRover ? '0 0 20px rgba(245, 158, 11, 0.35)' : '0 8px 24px rgba(0, 0, 0, 0.5)'
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <div style={{ width: '8px', height: '8px', borderRadius: '2px', backgroundColor: '#f59e0b' }}></div>
+                    <div style={{
+                      width: '8px',
+                      height: '8px',
+                      borderRadius: '2px',
+                      backgroundColor: '#f59e0b'
+                    }}></div>
                     <span style={{ fontSize: '12px', fontWeight: 700, color: '#fbbf24' }}>
                       🚜 ROVER UNIT (RS-01)
                     </span>
                   </div>
                   <span style={{
-                    backgroundColor: 'rgba(34, 197, 94, 0.15)',
-                    color: '#4ade80',
+                    backgroundColor: isRecordingRover ? 'rgba(239, 68, 68, 0.2)' : 'rgba(34, 197, 94, 0.15)',
+                    color: isRecordingRover ? '#f87171' : '#4ade80',
                     padding: '2px 6px',
                     borderRadius: '3px',
                     fontSize: '10px',
                     fontWeight: 700
                   }}>
-                    {rover.fix_status_text || "RTK FIXED (cm)"}
+                    {isRecordingRover ? "🔴 RECORDING PATH" : (rover.fix_status_text || "RTK FIXED")}
                   </span>
                 </div>
 
@@ -855,22 +1122,72 @@ export function App() {
                     </span>
                   </div>
 
+                  {/* Primary Start / Stop Button in HUD */}
+                  <div style={{ marginTop: '8px' }}>
+                    {!isRecordingRover ? (
+                      <button
+                        onClick={handleStartRoverTracking}
+                        style={{
+                          width: '100%',
+                          backgroundColor: '#f59e0b',
+                          color: '#000',
+                          border: 'none',
+                          padding: '8px',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px'
+                        }}
+                      >
+                        <Play size={13} fill="#000" />
+                        <span>Start Recording Rover Movement</span>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handleStopRoverTracking}
+                        style={{
+                          width: '100%',
+                          backgroundColor: '#10b981',
+                          color: '#fff',
+                          border: 'none',
+                          padding: '8px',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 800,
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px'
+                        }}
+                      >
+                        <Save size={14} />
+                        <span>Finish & Save Line ({liveDrawingDist.toFixed(1)}m)</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Secondary Simulation & Log Waypoint Controls */}
                   <div style={{ display: 'flex', gap: '6px', marginTop: '4px' }}>
                     <button
                       onClick={handleLogCurrentRtkPoint}
                       style={{
                         flex: 1,
-                        backgroundColor: '#0284c7',
-                        color: '#fff',
-                        border: 'none',
+                        backgroundColor: '#1e293b',
+                        color: '#38bdf8',
+                        border: '1px solid rgba(255,255,255,0.15)',
                         padding: '5px',
                         borderRadius: '4px',
-                        fontSize: '11px',
+                        fontSize: '10px',
                         fontWeight: 600,
                         cursor: 'pointer'
                       }}
                     >
-                      📌 Record RTK Point
+                      📌 Drop Waypoint
                     </button>
                     <button
                       onClick={handleToggleSimulation}
@@ -880,11 +1197,11 @@ export function App() {
                         border: '1px solid rgba(255,255,255,0.15)',
                         padding: '5px 8px',
                         borderRadius: '4px',
-                        fontSize: '11px',
+                        fontSize: '10px',
                         cursor: 'pointer'
                       }}
                     >
-                      {isSimulating ? "Stop Sim" : "Simulate"}
+                      {isSimulating ? "Stop Sim" : "Simulate Rover"}
                     </button>
                   </div>
                 </div>
@@ -893,7 +1210,7 @@ export function App() {
           )}
         </div>
 
-        {/* 4. SURVEY FEATURES SIDEBAR */}
+        {/* 5. SURVEY FEATURES SIDEBAR */}
         {showSurveySidebar && (
           <aside style={{
             width: '360px',
@@ -1000,7 +1317,7 @@ export function App() {
                   fontSize: '12px'
                 }}>
                   No lines surveyed yet.<br/>
-                  Click <strong>Draw Yard Line</strong> or <strong>Log RTK Point</strong> to begin.
+                  Click <strong>Start Rover Live Recording</strong> to begin walking.
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -1014,7 +1331,6 @@ export function App() {
                     }
                     const isSelected = line.id === activeLineId;
                     const bays20 = Math.floor(totalLen / 6.1);
-                    const bays40 = Math.floor(totalLen / 12.2);
 
                     return (
                       <div
@@ -1136,7 +1452,7 @@ export function App() {
         )}
       </main>
 
-      {/* 5. MODAL: SAVE NEW SURVEY LINE */}
+      {/* 6. MODAL: SAVE & EXPORT SURVEYED ROVER LINE */}
       {showSaveModal && (
         <div style={{
           position: 'fixed',
@@ -1144,23 +1460,24 @@ export function App() {
           left: 0,
           right: 0,
           bottom: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.7)',
+          backgroundColor: 'rgba(0, 0, 0, 0.75)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           zIndex: 3000
         }}>
           <div style={{
-            width: '400px',
+            width: '440px',
             backgroundColor: '#0f172a',
-            border: '1px solid #38bdf8',
+            border: '1px solid #f59e0b',
             borderRadius: '8px',
-            padding: '20px',
-            boxShadow: '0 12px 32px rgba(0, 0, 0, 0.8)'
+            padding: '22px',
+            boxShadow: '0 12px 36px rgba(0, 0, 0, 0.85)'
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
-              <h3 style={{ margin: 0, fontSize: '16px', color: '#ffffff', fontWeight: 700 }}>
-                📏 Save Surveyed Line
+              <h3 style={{ margin: 0, fontSize: '16px', color: '#ffffff', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span>🚜</span>
+                <span>Save Surveyed Rover Path</span>
               </h3>
               <button 
                 onClick={() => setShowSaveModal(false)}
@@ -1173,13 +1490,13 @@ export function App() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div>
                 <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '4px' }}>
-                  Line Name / Stack ID:
+                  Line Name / Container Bay ID:
                 </label>
                 <input
                   type="text"
                   value={newLineForm.name}
                   onChange={(e) => setNewLineForm(prev => ({ ...prev, name: e.target.value }))}
-                  placeholder="e.g. Bay Row 05 - Import"
+                  placeholder="e.g. Bay Row 05 - Import Stack"
                   style={{
                     width: '100%',
                     backgroundColor: '#1e293b',
@@ -1210,19 +1527,19 @@ export function App() {
                   }}
                 >
                   <option value="Container Stack Bay">Container Stack Bay</option>
-                  <option value="Traffic Lane">Traffic / Truck Lane</option>
+                  <option value="Traffic Lane">Traffic / Haul Route Lane</option>
                   <option value="Perimeter Boundary">Perimeter Boundary</option>
-                  <option value="Crane Track">Crane Track / Rail</option>
+                  <option value="Crane Rail Track">Crane Rail Track</option>
                   <option value="Inspection Bay">Inspection Bay</option>
                 </select>
               </div>
 
               <div>
                 <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>
-                  Line Display Color:
+                  Display Color:
                 </label>
                 <div style={{ display: 'flex', gap: '10px' }}>
-                  {["#00f0ff", "#10b981", "#f59e0b", "#ec4899", "#8b5cf6"].map(c => (
+                  {["#f59e0b", "#00f0ff", "#10b981", "#ec4899", "#8b5cf6"].map(c => (
                     <div
                       key={c}
                       onClick={() => setNewLineForm(prev => ({ ...prev, color: c }))}
@@ -1240,19 +1557,26 @@ export function App() {
                 </div>
               </div>
 
-              {/* Line Summary in Modal */}
+              {/* Calculated Survey Stats */}
               <div style={{
                 backgroundColor: '#1e293b',
-                padding: '10px',
+                padding: '12px',
                 borderRadius: '6px',
                 fontSize: '12px',
-                color: '#cbd5e1'
+                color: '#cbd5e1',
+                lineHeight: '1.6'
               }}>
-                <div>Total Vertices: <strong>{currentDrawingPoints.length}</strong></div>
-                <div>Calculated Length: <strong style={{ color: '#4ade80' }}>{liveDrawingDist.toFixed(2)} m</strong> ({(liveDrawingDist * 3.28084).toFixed(1)} ft)</div>
+                <div>Recorded Points: <strong>{currentDrawingPoints.length} vertices</strong> (RTK cm fix)</div>
+                <div>Calculated Distance: <strong style={{ color: '#4ade80', fontSize: '13px' }}>{liveDrawingDist.toFixed(2)} m</strong> ({(liveDrawingDist * 3.28084).toFixed(1)} ft)</div>
                 <div>Estimated 20ft Bays (6.1m): <strong style={{ color: '#fbbf24' }}>~{Math.floor(liveDrawingDist / 6.1)} slots</strong></div>
+                {currentDrawingPoints.length > 0 && (
+                  <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px', fontFamily: 'monospace' }}>
+                    Start UTM: E {wgs84ToUtm(currentDrawingPoints[0].lat, currentDrawingPoints[0].lng).easting}m | N {wgs84ToUtm(currentDrawingPoints[0].lat, currentDrawingPoints[0].lng).northing}m
+                  </div>
+                )}
               </div>
 
+              {/* Action Buttons */}
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '6px' }}>
                 <button
                   onClick={() => setShowSaveModal(false)}
@@ -1269,25 +1593,59 @@ export function App() {
                   Cancel
                 </button>
                 <button
-                  onClick={handleSaveConfirmed}
+                  onClick={() => handleSaveConfirmed(false)}
                   style={{
                     backgroundColor: '#0284c7',
+                    color: '#ffffff',
+                    border: 'none',
+                    padding: '8px 14px',
+                    borderRadius: '4px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  Save Line to Map
+                </button>
+                <button
+                  onClick={() => handleSaveConfirmed(true)}
+                  style={{
+                    backgroundColor: '#10b981',
                     color: '#ffffff',
                     border: 'none',
                     padding: '8px 16px',
                     borderRadius: '4px',
                     fontSize: '12px',
                     fontWeight: 700,
-                    cursor: 'pointer'
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    boxShadow: '0 0 12px rgba(16, 185, 129, 0.4)'
                   }}
                 >
-                  Save Line
+                  <FileSpreadsheet size={14} />
+                  <span>Save & Download Excel</span>
                 </button>
               </div>
             </div>
           </div>
         </div>
       )}
+
+      {/* Global CSS for subtle glowing and recording pulse */}
+      <style>{`
+        @keyframes recordBlink {
+          0% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.3; transform: scale(1.3); }
+          100% { opacity: 1; transform: scale(1); }
+        }
+        @keyframes pulseGlow {
+          0% { box-shadow: 0 0 10px rgba(245, 158, 11, 0.5); }
+          50% { box-shadow: 0 0 20px rgba(245, 158, 11, 0.9); }
+          100% { box-shadow: 0 0 10px rgba(245, 158, 11, 0.5); }
+        }
+      `}</style>
     </div>
   );
 }
