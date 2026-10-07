@@ -9,6 +9,7 @@ import asyncio
 import math
 import time
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -90,6 +91,30 @@ async def startup_event():
 async def shutdown_event():
     print("[BACKEND] Stopping GNSS Hardware Reader...")
     gnss_reader.stop()
+
+@app.get("/", response_class=HTMLResponse)
+def root_index():
+    return """
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta http-equiv="refresh" content="0; url=http://localhost:5173" />
+        <title>Redirecting to RTK Yard Survey UI...</title>
+        <style>
+          body { background: #0f172a; color: #f8fafc; font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; text-align: center; }
+          .card { background: #1e293b; padding: 30px; border-radius: 8px; border: 1px solid #38bdf8; max-width: 450px; }
+          a { display: inline-block; margin-top: 15px; background: #0284c7; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: bold; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h2>📍 RTK Telemetry Backend Online</h2>
+          <p>The interactive Yard Survey Map UI is running on <strong>port 5173</strong>.</p>
+          <a href="http://localhost:5173">Open RTK Yard Survey UI &rarr;</a>
+        </div>
+      </body>
+    </html>
+    """
 
 @app.get("/api/health")
 def get_health():
