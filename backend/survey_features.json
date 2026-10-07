@@ -1,0 +1,124 @@
+[
+  {
+    "id": "LINE_001",
+    "name": "Bay Row 01 (Import Stack)",
+    "category": "Container Stack Bay",
+    "color": "#00f0ff",
+    "points": [
+      {
+        "name": "PT_001",
+        "lat": 18.903620,
+        "lng": 73.046310,
+        "alt": 13.85,
+        "fixQuality": "RTK FIXED (cm accuracy)",
+        "isRtkLogged": true,
+        "timestamp": "2026-10-07 09:30:15"
+      },
+      {
+        "name": "PT_002",
+        "lat": 18.903150,
+        "lng": 73.046350,
+        "alt": 13.90,
+        "fixQuality": "RTK FIXED (cm accuracy)",
+        "isRtkLogged": true,
+        "timestamp": "2026-10-07 09:34:22"
+      },
+      {
+        "name": "PT_003",
+        "lat": 18.902680,
+        "lng": 73.046390,
+        "alt": 13.92,
+        "fixQuality": "RTK FIXED (cm accuracy)",
+        "isRtkLogged": true,
+        "timestamp": "2026-10-07 09:38:40"
+      }
+    ]
+  },
+  {
+    "id": "LINE_002",
+    "name": "Bay Row 02 (Export Stack)",
+    "category": "Container Stack Bay",
+    "color": "#10b981",
+    "points": [
+      {
+        "name": "PT_004",
+        "lat": 18.903650,
+        "lng": 73.046520,
+        "alt": 14.10,
+        "fixQuality": "RTK FIXED (cm accuracy)",
+        "isRtkLogged": true,
+        "timestamp": "2026-10-07 09:42:10"
+      },
+      {
+        "name": "PT_005",
+        "lat": 18.903180,
+        "lng": 73.046560,
+        "alt": 14.05,
+        "fixQuality": "RTK FIXED (cm accuracy)",
+        "isRtkLogged": true,
+        "timestamp": "2026-10-07 09:46:05"
+      },
+      {
+        "name": "PT_006",
+        "lat": 18.902710,
+        "lng": 73.046600,
+        "alt": 14.02,
+        "fixQuality": "RTK FIXED (cm accuracy)",
+        "isRtkLogged": true,
+        "timestamp": "2026-10-07 09:50:18"
+      }
+    ]
+  },
+  {
+    "id": "LINE_003",
+    "name": "Bay Row 03 (Customs Hold)",
+    "category": "Container Stack Bay",
+    "color": "#f59e0b",
+    "points": [
+      {
+        "name": "PT_007",
+        "lat": 18.903680,
+        "lng": 73.046710,
+        "alt": 13.95,
+        "fixQuality": "RTK FIXED (cm accuracy)",
+        "isRtkLogged": true,
+        "timestamp": "2026-10-07 09:55:00"
+      },
+      {
+        "name": "PT_008",
+        "lat": 18.902740,
+        "lng": 73.046790,
+        "alt": 13.98,
+        "fixQuality": "RTK FIXED (cm accuracy)",
+        "isRtkLogged": true,
+        "timestamp": "2026-10-07 09:59:45"
+      }
+    ]
+  },
+  {
+    "id": "LINE_004",
+    "name": "Main Internal Truck Lane",
+    "category": "Traffic Lane",
+    "color": "#a855f7",
+    "points": [
+      {
+        "name": "PT_009",
+        "lat": 18.903850,
+        "lng": 73.046180,
+        "alt": 13.75,
+        "fixQuality": "RTK FIXED (cm accuracy)",
+        "isRtkLogged": true,
+        "timestamp": "2026-10-07 10:05:12"
+      },
+      {
+        "name": "PT_010",
+        "lat": 18.903820,
+        "lng": 73.046950,
+        "alt": 13.80,
+        "fixQuality": "RTK FIXED (cm accuracy)",
+        "isRtkLogged": true,
+        "timestamp": "2026-10-07 10:10:30"
+      }
+    ]
+  }
+]

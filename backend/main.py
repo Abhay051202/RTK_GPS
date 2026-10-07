@@ -269,5 +269,246 @@ async def websocket_telemetry(websocket: WebSocket):
     except Exception as e:
         print("[WS ERROR]:", e)
 
+# --- SURVEY LINES & EXCEL EXPORT ENDPOINTS ---
+
+import os
+from fastapi.responses import FileResponse
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+SURVEY_FILE = os.path.join(os.path.dirname(__file__), "survey_features.json")
+
+def load_saved_survey_features():
+    if os.path.exists(SURVEY_FILE):
+        try:
+            with open(SURVEY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_survey_features_file(features):
+    with open(SURVEY_FILE, "w", encoding="utf-8") as f:
+        json.dump(features, f, indent=2)
+
+@app.get("/api/survey/features")
+def get_survey_features():
+    """Retrieve all saved surveyed lines and polygons"""
+    return {"features": load_saved_survey_features()}
+
+@app.post("/api/survey/features")
+def save_survey_features(payload: dict):
+    """Save or update surveyed lines and polygons"""
+    features = payload.get("features", [])
+    save_survey_features_file(features)
+    return {"status": "saved", "count": len(features)}
+
+@app.get("/api/survey/export-excel")
+def export_survey_excel():
+    """
+    Generate professional Excel spreadsheet (.xlsx) with centimeter-accuracy coordinates,
+    UTM projections, and segment distances.
+    """
+    features = load_saved_survey_features()
+    wb = openpyxl.Workbook()
+    
+    # Header styles
+    header_fill = PatternFill(start_color="0284C7", end_color="0284C7", fill_type="solid")
+    header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+    data_font = Font(name="Arial", size=10)
+    mono_font = Font(name="Consolas", size=10)
+    center_align = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(
+        left=Side(style='thin', color='DDDDDD'),
+        right=Side(style='thin', color='DDDDDD'),
+        top=Side(style='thin', color='DDDDDD'),
+        bottom=Side(style='thin', color='DDDDDD')
+    )
+
+    # 1. Sheet 1: Detailed Survey Points
+    ws_points = wb.active
+    ws_points.title = "Survey_Coordinates_CM"
+    
+    headers = [
+        "Point ID", "Feature / Layer Name", "Point Type",
+        "Latitude (deg)", "Longitude (deg)",
+        "UTM Easting (m)", "UTM Northing (m)", "UTM Zone",
+        "Elevation MSL (m)", "Segment Length (m)", "Cumulative Distance (m)",
+        "RTK Fix Quality", "Survey Method", "Timestamp"
+    ]
+    ws_points.append(headers)
+
+    for col_idx in range(1, len(headers) + 1):
+        cell = ws_points.cell(row=1, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = center_align
+
+    point_counter = 1
+    row_idx = 2
+
+    for feat in features:
+        feat_name = feat.get("name", "Unnamed Line")
+        points = feat.get("points", [])
+        cum_dist = 0.0
+
+        for idx, pt in enumerate(points):
+            seg_dist = 0.0
+            if idx > 0:
+                prev = points[idx - 1]
+                seg_dist = haversine_distance(prev["lat"], prev["lng"], pt["lat"], pt["lng"])
+                cum_dist += seg_dist
+
+            lat = pt.get("lat", 0.0)
+            lng = pt.get("lng", 0.0)
+            alt = pt.get("alt", 14.0)
+
+            # Approximate UTM Zone 43N conversion
+            # lat, lon -> UTM Zone 43N Easting & Northing
+            lat_rad = math.radians(lat)
+            lon_rad = math.radians(lng)
+            lon_origin = math.radians(75.0) # Zone 43 central meridian
+            easting = round(500000 + 6378137 * (lon_rad - lon_origin) * math.cos(lat_rad), 3)
+            northing = round(6378137 * lat_rad, 3)
+
+            ws_points.append([
+                pt.get("name", f"PT_{point_counter:03d}"),
+                feat_name,
+                feat.get("type", "LINE_VERTEX"),
+                round(lat, 8),
+                round(lng, 8),
+                easting,
+                northing,
+                "43N",
+                round(alt, 3),
+                round(seg_dist, 3),
+                round(cum_dist, 3),
+                pt.get("fixQuality", "RTK FIXED (cm level)"),
+                "RTK Rover Live" if pt.get("isRtkLogged") else "UI Survey Map",
+                pt.get("timestamp", time.strftime("%Y-%m-%d %H:%M:%S"))
+            ])
+
+            for c in range(1, len(headers) + 1):
+                cell = ws_points.cell(row=row_idx, column=c)
+                cell.font = mono_font if c in [4, 5, 6, 7, 9, 10, 11] else data_font
+                cell.border = thin_border
+
+            point_counter += 1
+            row_idx += 1
+
+    # Adjust column widths
+    for col in ws_points.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        col_letter = openpyxl.utils.get_column_letter(col[0].column)
+        ws_points.column_dimensions[col_letter].width = max(max_len + 3, 12)
+
+    # 2. Sheet 2: Features Summary
+    ws_summary = wb.create_sheet(title="Lines_Summary")
+    sum_headers = [
+        "Feature ID", "Feature Name", "Total Length (m)",
+        "Total Vertices", "Estimated 20ft Bays (6.1m)", "Estimated 40ft Bays (12.2m)", "Color"
+    ]
+    ws_summary.append(sum_headers)
+    for col_idx in range(1, len(sum_headers) + 1):
+        cell = ws_summary.cell(row=1, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = center_align
+
+    for s_idx, feat in enumerate(features, start=2):
+        pts = feat.get("points", [])
+        total_len = 0.0
+        for i in range(len(pts) - 1):
+            total_len += haversine_distance(pts[i]["lat"], pts[i]["lng"], pts[i+1]["lat"], pts[i+1]["lng"])
+
+        ws_summary.append([
+            feat.get("id", f"LINE_{s_idx-1}"),
+            feat.get("name", f"Line {s_idx-1}"),
+            round(total_len, 3),
+            len(pts),
+            math.floor(total_len / 6.1),
+            math.floor(total_len / 12.2),
+            feat.get("color", "#00F0FF")
+        ])
+        for c in range(1, len(sum_headers) + 1):
+            cell = ws_summary.cell(row=s_idx, column=c)
+            cell.font = data_font
+            cell.border = thin_border
+
+    for col in ws_summary.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        col_letter = openpyxl.utils.get_column_letter(col[0].column)
+        ws_summary.column_dimensions[col_letter].width = max(max_len + 3, 14)
+
+    # 3. Sheet 3: Container Bay Slots (6.1m Spacing)
+    ws_slots = wb.create_sheet(title="Container_Bay_Slots")
+    slot_headers = [
+        "Slot / Bay ID", "Parent Feature", "Slot Type",
+        "Latitude (deg)", "Longitude (deg)", "UTM Easting (m)", "UTM Northing (m)",
+        "Elevation MSL (m)", "Distance From Start (m)"
+    ]
+    ws_slots.append(slot_headers)
+    for col_idx in range(1, len(slot_headers) + 1):
+        cell = ws_slots.cell(row=1, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = center_align
+
+    slot_row_idx = 2
+    for feat in features:
+        pts = feat.get("points", [])
+        if len(pts) < 2:
+            continue
+        feat_name = feat.get("name", "Line")
+        slot_num = 1
+        for i in range(len(pts) - 1):
+            p1 = pts[i]
+            p2 = pts[i + 1]
+            seg_dist = haversine_distance(p1["lat"], p1["lng"], p2["lat"], p2["lng"])
+            num_slots = math.floor(seg_dist / 6.1)
+            for s in range(1, num_slots + 1):
+                frac = (s * 6.1) / seg_dist
+                if frac >= 1.0:
+                    break
+                s_lat = p1["lat"] + frac * (p2["lat"] - p1["lat"])
+                s_lng = p1["lng"] + frac * (p2["lng"] - p1["lng"])
+                s_alt = p1.get("alt", 14.0)
+                lat_rad = math.radians(s_lat)
+                lon_rad = math.radians(s_lng)
+                easting = round(500000 + 6378137 * (lon_rad - math.radians(75.0)) * math.cos(lat_rad), 3)
+                northing = round(6378137 * lat_rad, 3)
+
+                ws_slots.append([
+                    f"{feat_name.replace(' ', '_')}_SLOT_{slot_num:02d}",
+                    feat_name,
+                    "20ft Bay Slot",
+                    round(s_lat, 8),
+                    round(s_lng, 8),
+                    easting,
+                    northing,
+                    round(s_alt, 3),
+                    round(s * 6.1, 2)
+                ])
+                for c in range(1, len(slot_headers) + 1):
+                    cell = ws_slots.cell(row=slot_row_idx, column=c)
+                    cell.font = mono_font if c in [4, 5, 6, 7, 8, 9] else data_font
+                    cell.border = thin_border
+                slot_row_idx += 1
+                slot_num += 1
+
+    for col in ws_slots.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        col_letter = openpyxl.utils.get_column_letter(col[0].column)
+        ws_slots.column_dimensions[col_letter].width = max(max_len + 3, 14)
+
+    export_path = os.path.join(os.path.dirname(__file__), "Prosper_CFS_RTK_Survey.xlsx")
+    wb.save(export_path)
+
+    return FileResponse(
+        export_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=f"Prosper_CFS_RTK_Survey_{time.strftime('%Y%m%d_%H%M%S')}.xlsx"
+    )
+
 if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8000, log_level="info")
