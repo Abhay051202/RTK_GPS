@@ -16,7 +16,11 @@ export function SimpleMap({
   onSelectLine,
   showContainerBays = true,
   onRemoveActiveWaypoint,
-  onRemoveSavedWaypoint
+  onRemoveSavedWaypoint,
+  containers = PROSPER_CONTAINERS,
+  isBoundaryMode = false,
+  yardBoundary = [],
+  onBoundaryClick
 }) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
@@ -31,6 +35,8 @@ export function SimpleMap({
   const surveyLayersRef = useRef(null);
   const drawingLayerRef = useRef(null);
   const containerLayerRef = useRef(null);
+  const boundaryLayerRef = useRef(null);
+  const canvasRendererRef = useRef(null);
 
   // 1. Initialize Map
   useEffect(() => {
@@ -71,7 +77,9 @@ export function SimpleMap({
     satelliteLayer.addTo(map);
 
     // Feature group layers for survey lines, containers & dynamic drawing
+    canvasRendererRef.current = L.canvas({ padding: 0.5 });
     containerLayerRef.current = L.featureGroup().addTo(map);
+    boundaryLayerRef.current = L.featureGroup().addTo(map);
     surveyLayersRef.current = L.featureGroup().addTo(map);
     drawingLayerRef.current = L.featureGroup().addTo(map);
 
@@ -252,15 +260,18 @@ export function SimpleMap({
     if (!map) return;
 
     const handleClick = (e) => {
-      if (isDrawingMode && onMapClick) {
-        onMapClick({
-          lat: Number(e.latlng.lat.toFixed(8)),
-          lng: Number(e.latlng.lng.toFixed(8))
-        });
+      const pt = {
+        lat: Number(e.latlng.lat.toFixed(8)),
+        lng: Number(e.latlng.lng.toFixed(8))
+      };
+      if (isBoundaryMode && onBoundaryClick) {
+        onBoundaryClick(pt);
+      } else if (isDrawingMode && onMapClick) {
+        onMapClick(pt);
       }
     };
 
-    if (isDrawingMode) {
+    if (isDrawingMode || isBoundaryMode) {
       map.getContainer().style.cursor = 'crosshair';
       map.on('click', handleClick);
     } else {
@@ -273,9 +284,49 @@ export function SimpleMap({
         map.getContainer().style.cursor = '';
       }
     };
-  }, [isDrawingMode, onMapClick]);
+  }, [isDrawingMode, onMapClick, isBoundaryMode, onBoundaryClick]);
 
-  // 4b. Render Prosper CFS Surveyed Container Bay Polygons (152 Slots)
+  // 4a. Render Yard Boundary (fence polygon used for auto-fill)
+  useEffect(() => {
+    const map = mapRef.current;
+    const group = boundaryLayerRef.current;
+    if (!map || !group) return;
+
+    group.clearLayers();
+    if (!yardBoundary || yardBoundary.length === 0) return;
+
+    const latlngs = yardBoundary.map(p => [p.lat, p.lng]);
+    const style = {
+      color: '#facc15',
+      weight: 3,
+      dashArray: '8 6',
+      fill: true,
+      fillColor: '#facc15',
+      fillOpacity: isBoundaryMode ? 0.08 : 0.03,
+      interactive: false
+    };
+
+    if (latlngs.length >= 3) {
+      group.addLayer(L.polygon(latlngs, style));
+    } else if (latlngs.length === 2) {
+      group.addLayer(L.polyline(latlngs, style));
+    }
+
+    if (isBoundaryMode) {
+      latlngs.forEach((ll, idx) => {
+        group.addLayer(L.circleMarker(ll, {
+          radius: 6,
+          color: '#ffffff',
+          weight: 2,
+          fillColor: idx === 0 ? '#22c55e' : '#facc15',
+          fillOpacity: 1,
+          interactive: false
+        }).bindTooltip(`${idx + 1}`, { permanent: true, direction: 'top', offset: [0, -6] }));
+      });
+    }
+  }, [yardBoundary, isBoundaryMode]);
+
+  // 4b. Render Container Bay Polygons (demo layout or auto-filled yard)
   useEffect(() => {
     const map = mapRef.current;
     const group = containerLayerRef.current;
@@ -283,14 +334,16 @@ export function SimpleMap({
 
     group.clearLayers();
 
-    if (!showContainerBays) return;
+    if (!showContainerBays || !containers) return;
 
-    PROSPER_CONTAINERS.forEach((container) => {
+    containers.forEach((container) => {
       const polygon = L.polygon(container.corners, {
         color: container.borderColor || '#0284c7',
         fillColor: container.color || '#00f0ff',
         fillOpacity: 0.42,
-        weight: 1.5
+        weight: 1.5,
+        renderer: canvasRendererRef.current,
+        interactive: !isBoundaryMode && !isDrawingMode
       });
 
       // Interactive hover highlight
@@ -354,7 +407,7 @@ export function SimpleMap({
       polygon.bindPopup(popupHtml);
       group.addLayer(polygon);
     });
-  }, [showContainerBays]);
+  }, [showContainerBays, containers, isBoundaryMode, isDrawingMode]);
 
   // 5. Render Completed Survey Lines & Vertices
   useEffect(() => {

@@ -326,7 +326,7 @@ export function exportSurveyToExcel(features, options = {}) {
 
   if (prosperSlotsRows.length > 0) {
     const wsProsper = XLSX.utils.json_to_sheet(prosperSlotsRows);
-    XLSX.utils.book_append_sheet(wb, wsProsper, "Prosper_Containers_152_Slots");
+    XLSX.utils.book_append_sheet(wb, wsProsper, `Container_Slots_${prosperSlotsRows.length}`.slice(0, 31));
   }
 
   const wsPoints = XLSX.utils.json_to_sheet(pointsRows);

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { SimpleMap } from './components/SimpleMap';
 import { 
   MapPin, 
@@ -33,6 +33,16 @@ import {
   exportSurveyToExcel 
 } from './utils/coordinateUtils';
 import { PROSPER_CONTAINERS } from './data/prosperYardContainers';
+import { fillYardWithContainers, polygonAreaSqM, DEFAULT_FILL_OPTIONS } from './utils/yardFill';
+
+const loadJson = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+};
 
 const DEFAULT_SAMPLE_LINES = [
   {
@@ -141,6 +151,40 @@ export function App() {
   // Waypoint Management States
   const [expandedLineId, setExpandedLineId] = useState(null);
   const [showActivePointsDrawer, setShowActivePointsDrawer] = useState(false);
+
+  // Yard Auto-Fill States (boundary polygon -> container grid)
+  const [isBoundaryMode, setIsBoundaryMode] = useState(false);
+  const [yardBoundary, setYardBoundary] = useState(() => loadJson('rtk_yard_boundary', []));
+  const [fillOptions, setFillOptions] = useState(() => ({
+    laneWidth: DEFAULT_FILL_OPTIONS.laneWidth,
+    fenceMargin: DEFAULT_FILL_OPTIONS.fenceMargin,
+    orientationDeg: '',
+    ...loadJson('rtk_fill_options', {})
+  }));
+
+  useEffect(() => {
+    localStorage.setItem('rtk_yard_boundary', JSON.stringify(yardBoundary));
+  }, [yardBoundary]);
+
+  useEffect(() => {
+    localStorage.setItem('rtk_fill_options', JSON.stringify(fillOptions));
+  }, [fillOptions]);
+
+  const filledContainers = useMemo(() => {
+    if (yardBoundary.length < 3) return null;
+    return fillYardWithContainers(yardBoundary, {
+      laneWidth: Number(fillOptions.laneWidth) || DEFAULT_FILL_OPTIONS.laneWidth,
+      fenceMargin: Number(fillOptions.fenceMargin) >= 0 ? Number(fillOptions.fenceMargin) : DEFAULT_FILL_OPTIONS.fenceMargin,
+      orientationDeg: fillOptions.orientationDeg === '' ? undefined : Number(fillOptions.orientationDeg)
+    });
+  }, [yardBoundary, fillOptions]);
+
+  const activeContainers = filledContainers || PROSPER_CONTAINERS;
+  const yardAreaSqM = useMemo(() => polygonAreaSqM(yardBoundary), [yardBoundary]);
+
+  const handleBoundaryClick = useCallback((pt) => {
+    setYardBoundary(prev => [...prev, pt]);
+  }, []);
 
   const wsRef = useRef(null);
 
@@ -452,7 +496,7 @@ export function App() {
         const fileName = exportSurveyToExcel([lineObj], {
           yardName: lineObj.name.replace(/\s+/g, '_'),
           slotSpacing: 6.1,
-          containers: PROSPER_CONTAINERS
+          containers: activeContainers
         });
         showToast(`✅ Saved & Downloaded Excel: ${fileName}!`);
       } catch (err) {
@@ -488,9 +532,9 @@ export function App() {
       const fileName = exportSurveyToExcel(surveyLines, {
         yardName: "Prosper_CFS_Nhava_Sheva",
         slotSpacing: 6.1, // 20ft container bay
-        containers: PROSPER_CONTAINERS
+        containers: activeContainers
       });
-      showToast(`📊 Downloaded Excel: ${fileName} (152 Container Geofences Included!)`);
+      showToast(`📊 Downloaded Excel: ${fileName} (${activeContainers.length} Container Slots Included!)`);
     } catch (err) {
       console.error(err);
       window.open('http://127.0.0.1:8000/api/survey/export-excel', '_blank');
@@ -714,10 +758,10 @@ export function App() {
             <span>Export Excel (.xlsx)</span>
           </button>
 
-          {/* 4. CONTAINER GEOFENCES TOGGLE (152 SLOTS) */}
+          {/* 4. CONTAINER GEOFENCES TOGGLE */}
           <button
             onClick={() => setShowContainerBays(prev => !prev)}
-            title="Toggle 152 surveyed Prosper CFS container slots on map"
+            title="Show / hide container slots on map"
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -733,7 +777,35 @@ export function App() {
               boxShadow: showContainerBays ? '0 0 10px rgba(0, 240, 255, 0.3)' : 'none'
             }}
           >
-            <span>📦 Containers (152)</span>
+            <span>📦 Containers ({activeContainers.length})</span>
+          </button>
+
+          {/* 5. FILL WHOLE YARD WITH CONTAINERS */}
+          <button
+            onClick={() => {
+              if (isDrawingMode || isRecordingRover) {
+                showToast('⚠️ Finish or cancel the current line first.');
+                return;
+              }
+              setIsBoundaryMode(prev => !prev);
+              setShowContainerBays(true);
+            }}
+            title="Click the yard fence corners on the map; the area is auto-filled with 20ft slots"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              backgroundColor: isBoundaryMode ? '#facc15' : '#1e293b',
+              color: isBoundaryMode ? '#000' : '#facc15',
+              border: '1px solid rgba(250, 204, 21, 0.6)',
+              padding: '6px 12px',
+              borderRadius: '6px',
+              fontSize: '12px',
+              fontWeight: 700,
+              cursor: 'pointer'
+            }}
+          >
+            <span>{isBoundaryMode ? '✔ Done Boundary' : '🏗️ Fill Yard'}</span>
           </button>
 
           <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255, 255, 255, 0.2)', margin: '0 4px' }} />
@@ -1100,6 +1172,101 @@ export function App() {
         </div>
       )}
 
+      {/* YARD BOUNDARY / AUTO-FILL BANNER */}
+      {isBoundaryMode && (
+        <div style={{
+          backgroundColor: '#422006',
+          borderBottom: '2px solid #facc15',
+          padding: '8px 20px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '10px',
+          zIndex: 950,
+          fontSize: '12px'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+            <span style={{ color: '#facc15', fontWeight: 800 }}>🏗️ YARD BOUNDARY:</span>
+            <span style={{ color: '#fef9c3' }}>
+              Click each corner of the yard fence on the map. The grid previews live.
+            </span>
+            <div style={{
+              display: 'flex',
+              gap: '12px',
+              backgroundColor: '#1c1917',
+              padding: '4px 12px',
+              borderRadius: '4px',
+              border: '1px solid #a16207'
+            }}>
+              <span>Corners: <strong style={{ color: '#fff' }}>{yardBoundary.length}</strong></span>
+              <span>Area: <strong style={{ color: '#4ade80', fontFamily: 'monospace' }}>{(yardAreaSqM / 10000).toFixed(3)} ha</strong> ({Math.round(yardAreaSqM).toLocaleString()} m²)</span>
+              <span>20ft Slots: <strong style={{ color: '#00f0ff' }}>{filledContainers ? filledContainers.length : 0}</strong></span>
+            </div>
+            <label style={{ color: '#fde68a', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              Lane (m)
+              <input
+                type="number" min="3" max="40" step="0.5"
+                value={fillOptions.laneWidth}
+                onChange={(e) => setFillOptions(o => ({ ...o, laneWidth: e.target.value }))}
+                style={{ width: '56px', backgroundColor: '#1c1917', color: '#fff', border: '1px solid #a16207', borderRadius: '4px', padding: '2px 4px' }}
+              />
+            </label>
+            <label style={{ color: '#fde68a', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              Fence gap (m)
+              <input
+                type="number" min="0" max="30" step="0.5"
+                value={fillOptions.fenceMargin}
+                onChange={(e) => setFillOptions(o => ({ ...o, fenceMargin: e.target.value }))}
+                style={{ width: '56px', backgroundColor: '#1c1917', color: '#fff', border: '1px solid #a16207', borderRadius: '4px', padding: '2px 4px' }}
+              />
+            </label>
+            <label title="Leave blank to align rows with the longest fence edge" style={{ color: '#fde68a', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              Row bearing (°)
+              <input
+                type="number" min="0" max="360" step="0.5" placeholder="auto"
+                value={fillOptions.orientationDeg}
+                onChange={(e) => setFillOptions(o => ({ ...o, orientationDeg: e.target.value }))}
+                style={{ width: '60px', backgroundColor: '#1c1917', color: '#fff', border: '1px solid #a16207', borderRadius: '4px', padding: '2px 4px' }}
+              />
+            </label>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              onClick={() => setYardBoundary(prev => prev.slice(0, -1))}
+              disabled={yardBoundary.length === 0}
+              style={{ backgroundColor: '#334155', color: '#fff', border: '1px solid rgba(255,255,255,0.15)', padding: '5px 10px', borderRadius: '4px', fontSize: '11px', cursor: yardBoundary.length === 0 ? 'not-allowed' : 'pointer' }}
+            >
+              ⌫ Undo Corner
+            </button>
+            <button
+              onClick={() => {
+                if (window.confirm('Clear the yard boundary and go back to the demo 152-slot layout?')) {
+                  setYardBoundary([]);
+                }
+              }}
+              style={{ backgroundColor: '#7f1d1d', color: '#fff', border: 'none', padding: '5px 10px', borderRadius: '4px', fontSize: '11px', cursor: 'pointer' }}
+            >
+              🗑️ Clear
+            </button>
+            <button
+              onClick={() => {
+                if (yardBoundary.length < 3) {
+                  showToast('⚠️ Click at least 3 corners of the yard first.');
+                  return;
+                }
+                setIsBoundaryMode(false);
+                showToast(`✅ Yard filled with ${filledContainers.length} container slots. Use Export Excel to download.`, 4000);
+              }}
+              style={{ backgroundColor: '#10b981', color: '#fff', border: 'none', padding: '6px 14px', borderRadius: '4px', fontSize: '12px', fontWeight: 800, cursor: 'pointer' }}
+            >
+              ✔ Done
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 4. MAIN WORKSPACE: MAP & SIDEBAR */}
       <main style={{ flex: 1, position: 'relative', width: '100%', height: 'calc(100vh - 56px)', display: 'flex' }}>
         {/* Full-width Map View */}
@@ -1117,6 +1284,10 @@ export function App() {
             showContainerBays={showContainerBays}
             onRemoveActiveWaypoint={handleRemoveActiveWaypoint}
             onRemoveSavedWaypoint={handleRemoveSavedWaypoint}
+            containers={activeContainers}
+            isBoundaryMode={isBoundaryMode}
+            yardBoundary={yardBoundary}
+            onBoundaryClick={handleBoundaryClick}
           />
 
           {/* TELEMETRY HUD (Floating on Top Left) */}
