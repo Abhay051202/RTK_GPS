@@ -137,6 +137,10 @@ export function App() {
   const recordIntervalMetersRef = useRef(0.5);
   const recordedRoverPointsRef = useRef([]);
 
+  // Waypoint Management States
+  const [expandedLineId, setExpandedLineId] = useState(null);
+  const [showActivePointsDrawer, setShowActivePointsDrawer] = useState(false);
+
   const wsRef = useRef(null);
 
   // Sync ref with state
@@ -379,12 +383,35 @@ export function App() {
     showToast(`📌 Dropped Waypoint #${currentDrawingPoints.length + 1} (${lat.toFixed(6)}°, ${lng.toFixed(6)}°)`);
   };
 
-  // Undo last point
+  // Remove last point
   const handleUndoPoint = () => {
     if (currentDrawingPoints.length === 0) return;
     const updated = currentDrawingPoints.slice(0, -1);
     recordedRoverPointsRef.current = updated;
     setCurrentDrawingPoints(updated);
+    showToast(`🗑️ Removed last waypoint.`);
+  };
+
+  // Remove specific waypoint from active drawing
+  const handleRemoveActiveWaypoint = (index) => {
+    const updated = currentDrawingPoints.filter((_, idx) => idx !== index);
+    recordedRoverPointsRef.current = updated;
+    setCurrentDrawingPoints(updated);
+    showToast(`🗑️ Removed active waypoint #${index + 1}`);
+  };
+
+  // Remove specific waypoint from a saved line
+  const handleRemoveSavedWaypoint = (lineId, pointIndex) => {
+    const updated = surveyLines.map(line => {
+      if (line.id === lineId) {
+        const newPts = line.points.filter((_, idx) => idx !== pointIndex);
+        return { ...line, points: newPts };
+      }
+      return line;
+    });
+    setSurveyLines(updated);
+    syncLinesToBackend(updated);
+    showToast(`🗑️ Removed waypoint #${pointIndex + 1} from line.`);
   };
 
   // Cancel drawing
@@ -861,6 +888,44 @@ export function App() {
             </button>
 
             <button
+              onClick={handleUndoPoint}
+              disabled={currentDrawingPoints.length === 0}
+              title="Remove last recorded waypoint"
+              style={{
+                backgroundColor: '#334155',
+                color: currentDrawingPoints.length === 0 ? '#64748b' : '#fff',
+                border: '1px solid rgba(255,255,255,0.15)',
+                padding: '5px 10px',
+                borderRadius: '4px',
+                fontSize: '11px',
+                cursor: currentDrawingPoints.length === 0 ? 'not-allowed' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px'
+              }}
+            >
+              <Undo2 size={12} /> Remove Last
+            </button>
+
+            <button
+              onClick={() => setShowActivePointsDrawer(prev => !prev)}
+              disabled={currentDrawingPoints.length === 0}
+              title="View & remove individual waypoints"
+              style={{
+                backgroundColor: '#1e293b',
+                color: '#38bdf8',
+                border: '1px solid rgba(56, 189, 248, 0.4)',
+                padding: '5px 10px',
+                borderRadius: '4px',
+                fontSize: '11px',
+                fontWeight: 600,
+                cursor: currentDrawingPoints.length === 0 ? 'not-allowed' : 'pointer'
+              }}
+            >
+              📋 Waypoints ({currentDrawingPoints.length})
+            </button>
+
+            <button
               onClick={handleStopRoverTracking}
               style={{
                 backgroundColor: '#10b981',
@@ -932,6 +997,7 @@ export function App() {
             <button
               onClick={handleUndoPoint}
               disabled={currentDrawingPoints.length === 0}
+              title="Remove last recorded point"
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -945,7 +1011,24 @@ export function App() {
                 cursor: currentDrawingPoints.length === 0 ? 'not-allowed' : 'pointer'
               }}
             >
-              <Undo2 size={13} /> Undo Point
+              <Undo2 size={13} /> Remove Last
+            </button>
+
+            <button
+              onClick={() => setShowActivePointsDrawer(prev => !prev)}
+              disabled={currentDrawingPoints.length === 0}
+              style={{
+                backgroundColor: '#1e293b',
+                color: '#38bdf8',
+                border: '1px solid rgba(56, 189, 248, 0.4)',
+                padding: '5px 10px',
+                borderRadius: '4px',
+                fontSize: '11px',
+                fontWeight: 600,
+                cursor: currentDrawingPoints.length === 0 ? 'not-allowed' : 'pointer'
+              }}
+            >
+              📋 Waypoints ({currentDrawingPoints.length})
             </button>
 
             <button
@@ -1012,6 +1095,8 @@ export function App() {
             activeLineId={activeLineId}
             onSelectLine={(id) => setActiveLineId(id)}
             showContainerBays={showContainerBays}
+            onRemoveActiveWaypoint={handleRemoveActiveWaypoint}
+            onRemoveSavedWaypoint={handleRemoveSavedWaypoint}
           />
 
           {/* TELEMETRY HUD (Floating on Top Left) */}
@@ -1418,6 +1503,89 @@ export function App() {
                             Start: {line.points[0].lat.toFixed(6)}°, {line.points[0].lng.toFixed(6)}°
                           </div>
                         )}
+
+                        {/* Waypoints Expand & Delete Controls */}
+                        <div style={{ marginTop: '8px' }}>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedLineId(expandedLineId === line.id ? null : line.id);
+                            }}
+                            style={{
+                              width: '100%',
+                              backgroundColor: expandedLineId === line.id ? '#0284c7' : '#0f172a',
+                              border: '1px solid rgba(255, 255, 255, 0.1)',
+                              color: expandedLineId === line.id ? '#fff' : '#38bdf8',
+                              padding: '4px',
+                              borderRadius: '4px',
+                              fontSize: '10px',
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '4px'
+                            }}
+                          >
+                            {expandedLineId === line.id ? "▲ Close Waypoints List" : `▼ Edit Waypoints (${line.points.length})`}
+                          </button>
+
+                          {expandedLineId === line.id && (
+                            <div style={{
+                              marginTop: '6px',
+                              maxHeight: '180px',
+                              overflowY: 'auto',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '4px',
+                              padding: '4px',
+                              backgroundColor: '#090d16',
+                              borderRadius: '4px',
+                              border: '1px solid rgba(255, 255, 255, 0.08)'
+                            }}>
+                              {line.points.map((pt, pIdx) => (
+                                <div
+                                  key={pIdx}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                    backgroundColor: '#1e293b',
+                                    padding: '4px 6px',
+                                    borderRadius: '3px',
+                                    fontSize: '10px'
+                                  }}
+                                >
+                                  <div>
+                                    <strong style={{ color: '#38bdf8' }}>#{pIdx + 1}</strong>
+                                    <span style={{ color: '#cbd5e1', marginLeft: '6px', fontFamily: 'monospace' }}>
+                                      {pt.lat.toFixed(6)}°, {pt.lng.toFixed(6)}°
+                                    </span>
+                                  </div>
+
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleRemoveSavedWaypoint(line.id, pIdx);
+                                    }}
+                                    title="Delete this waypoint from line"
+                                    style={{
+                                      background: 'none',
+                                      border: 'none',
+                                      color: '#ef4444',
+                                      cursor: 'pointer',
+                                      padding: '2px',
+                                      display: 'flex',
+                                      alignItems: 'center'
+                                    }}
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
@@ -1637,6 +1805,144 @@ export function App() {
                   <span>Save & Download Excel</span>
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 7. MODAL: MANAGE ACTIVE DRAWING WAYPOINTS */}
+      {showActivePointsDrawer && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.75)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 3500
+        }}>
+          <div style={{
+            width: '420px',
+            maxHeight: '80vh',
+            backgroundColor: '#0f172a',
+            border: '1px solid #38bdf8',
+            borderRadius: '8px',
+            padding: '18px',
+            display: 'flex',
+            flexDirection: 'column',
+            boxShadow: '0 12px 36px rgba(0, 0, 0, 0.85)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '8px' }}>
+              <h3 style={{ margin: 0, fontSize: '15px', color: '#ffffff', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span>📍</span>
+                <span>Active Line Waypoints ({currentDrawingPoints.length})</span>
+              </h3>
+              <button 
+                onClick={() => setShowActivePointsDrawer(false)}
+                style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px' }}>
+              {currentDrawingPoints.length === 0 ? (
+                <div style={{ textAlign: 'center', color: '#64748b', padding: '20px', fontSize: '12px' }}>
+                  No waypoints recorded yet.
+                </div>
+              ) : (
+                currentDrawingPoints.map((pt, idx) => {
+                  const utm = wgs84ToUtm(pt.lat, pt.lng);
+                  return (
+                    <div 
+                      key={idx}
+                      style={{
+                        backgroundColor: '#1e293b',
+                        padding: '8px 10px',
+                        borderRadius: '4px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        fontSize: '11px'
+                      }}
+                    >
+                      <div>
+                        <div style={{ color: '#38bdf8', fontWeight: 700 }}>
+                          #{idx + 1} {pt.name}
+                        </div>
+                        <div style={{ color: '#cbd5e1', fontFamily: 'monospace', fontSize: '10px' }}>
+                          {pt.lat.toFixed(8)}°, {pt.lng.toFixed(8)}°
+                        </div>
+                        <div style={{ color: '#64748b', fontSize: '10px' }}>
+                          UTM: E {utm.easting}m | N {utm.northing}m
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => handleRemoveActiveWaypoint(idx)}
+                        title="Delete this waypoint"
+                        style={{
+                          backgroundColor: 'rgba(239, 68, 68, 0.2)',
+                          color: '#f87171',
+                          border: '1px solid rgba(239, 68, 68, 0.4)',
+                          padding: '5px 8px',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          fontSize: '11px',
+                          fontWeight: 600
+                        }}
+                      >
+                        <Trash2 size={12} /> Remove
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '10px' }}>
+              <button
+                onClick={() => {
+                  if (window.confirm("Clear all active waypoints?")) {
+                    handleCancelDrawing();
+                    setShowActivePointsDrawer(false);
+                  }
+                }}
+                disabled={currentDrawingPoints.length === 0}
+                style={{
+                  backgroundColor: 'transparent',
+                  color: '#ef4444',
+                  border: '1px solid #ef4444',
+                  padding: '6px 10px',
+                  borderRadius: '4px',
+                  fontSize: '11px',
+                  cursor: currentDrawingPoints.length === 0 ? 'not-allowed' : 'pointer'
+                }}
+              >
+                Clear All Points
+              </button>
+
+              <button
+                onClick={() => setShowActivePointsDrawer(false)}
+                style={{
+                  backgroundColor: '#0284c7',
+                  color: '#fff',
+                  border: 'none',
+                  padding: '6px 14px',
+                  borderRadius: '4px',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                Done
+              </button>
             </div>
           </div>
         </div>

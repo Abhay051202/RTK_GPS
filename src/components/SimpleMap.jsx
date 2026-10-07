@@ -13,7 +13,9 @@ export function SimpleMap({
   onMapClick,
   activeLineId,
   onSelectLine,
-  showContainerBays = true
+  showContainerBays = true,
+  onRemoveActiveWaypoint,
+  onRemoveSavedWaypoint
 }) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
@@ -27,7 +29,6 @@ export function SimpleMap({
   // Layer groups for survey lines and drawing preview
   const surveyLayersRef = useRef(null);
   const drawingLayerRef = useRef(null);
-  const mouseFollowerLineRef = useRef(null);
 
   // 1. Initialize Map
   useEffect(() => {
@@ -273,8 +274,9 @@ export function SimpleMap({
 
   // 5. Render Completed Survey Lines & Vertices
   useEffect(() => {
+    const map = mapRef.current;
     const group = surveyLayersRef.current;
-    if (!group) return;
+    if (!map || !group) return;
 
     group.clearLayers();
 
@@ -298,8 +300,7 @@ export function SimpleMap({
       const polyline = L.polyline(latlngs, {
         color: color,
         weight: isSelected ? 5 : 3.5,
-        opacity: isSelected ? 1.0 : 0.88,
-        dashArray: isSelected ? null : null
+        opacity: isSelected ? 1.0 : 0.88
       });
 
       // Interactive popup
@@ -313,7 +314,6 @@ export function SimpleMap({
           <div><strong>Length:</strong> <span style="font-family: monospace; font-weight: 700;">${totalDist.toFixed(2)} m</span> (${(totalDist * 3.28084).toFixed(1)} ft)</div>
           <div><strong>Vertices:</strong> ${line.points.length} points</div>
           <div><strong>Est. 20ft Bays (6.1m):</strong> ~${Math.floor(totalDist / 6.1)} slots</div>
-          <div><strong>Est. 40ft Bays (12.2m):</strong> ~${Math.floor(totalDist / 12.2)} slots</div>
           <div style="margin-top: 4px; font-size: 11px; color: #64748b;">
             Start UTM: E ${startUtm.easting} | N ${startUtm.northing} (${startUtm.zone})
           </div>
@@ -326,19 +326,20 @@ export function SimpleMap({
 
       group.addLayer(polyline);
 
-      // Draw Vertex markers
+      // Draw Vertex markers with REMOVE WAYPOINT BUTTON in popup
       line.points.forEach((pt, pIdx) => {
         const isStart = pIdx === 0;
         const isEnd = pIdx === line.points.length - 1;
 
         const vertexHtml = `
           <div style="
-            width: ${isStart || isEnd ? '12px' : '8px'};
-            height: ${isStart || isEnd ? '12px' : '8px'};
+            width: ${isStart || isEnd ? '12px' : '9px'};
+            height: ${isStart || isEnd ? '12px' : '9px'};
             border-radius: 50%;
             background-color: ${isStart ? '#22c55e' : (isEnd ? '#ef4444' : color)};
             border: 2px solid #ffffff;
             box-shadow: 0 0 6px rgba(0,0,0,0.6);
+            cursor: pointer;
           "></div>
         `;
 
@@ -352,15 +353,39 @@ export function SimpleMap({
         });
 
         const utm = wgs84ToUtm(pt.lat, pt.lng);
-        vMarker.bindTooltip(`
-          <div style="font-size: 11px; font-family: monospace;">
-            <strong>${pt.name || `PT ${pIdx + 1}`}</strong><br/>
-            Lat: ${pt.lat.toFixed(8)}°<br/>
-            Lng: ${pt.lng.toFixed(8)}°<br/>
-            UTM: ${utm.easting}m, ${utm.northing}m
-          </div>
-        `, { direction: 'top', offset: [0, -6] });
 
+        // Click popup with REMOVE WAYPOINT action
+        const popupContent = document.createElement('div');
+        popupContent.style.fontFamily = '-apple-system, BlinkMacSystemFont, sans-serif';
+        popupContent.style.fontSize = '12px';
+        popupContent.style.lineHeight = '1.4';
+        popupContent.style.color = '#0f172a';
+        popupContent.style.minWidth = '190px';
+
+        popupContent.innerHTML = `
+          <div style="font-weight: 700; color: #0284c7; margin-bottom: 4px;">
+            📍 ${line.name} &bull; Point #${pIdx + 1}
+          </div>
+          <div><strong>Lat:</strong> ${pt.lat.toFixed(8)}°</div>
+          <div><strong>Lng:</strong> ${pt.lng.toFixed(8)}°</div>
+          <div style="font-size: 11px; color: #64748b; margin-bottom: 8px;">
+            UTM: E ${utm.easting}m | N ${utm.northing}m
+          </div>
+        `;
+
+        if (onRemoveSavedWaypoint) {
+          const removeBtn = document.createElement('button');
+          removeBtn.innerHTML = '🗑️ Remove This Waypoint';
+          removeBtn.style.cssText = 'background: #ef4444; color: #fff; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 700; width: 100%; display: flex; align-items: center; justify-content: center; gap: 4px;';
+          removeBtn.onclick = (e) => {
+            e.stopPropagation();
+            onRemoveSavedWaypoint(line.id, pIdx);
+            map.closePopup();
+          };
+          popupContent.appendChild(removeBtn);
+        }
+
+        vMarker.bindPopup(popupContent);
         group.addLayer(vMarker);
       });
 
@@ -391,12 +416,13 @@ export function SimpleMap({
         }
       }
     });
-  }, [surveyLines, activeLineId, onSelectLine, showContainerBays]);
+  }, [surveyLines, activeLineId, onSelectLine, showContainerBays, onRemoveSavedWaypoint]);
 
-  // 6. Render Active Line Under Construction (Live Drawing Preview)
+  // 6. Render Active Line Under Construction with REMOVE WAYPOINT ON CLICK
   useEffect(() => {
+    const map = mapRef.current;
     const group = drawingLayerRef.current;
-    if (!group) return;
+    if (!map || !group) return;
 
     group.clearLayers();
 
@@ -432,6 +458,7 @@ export function SimpleMap({
           align-items: center;
           justify-content: center;
           font-family: monospace;
+          cursor: pointer;
         ">
           ${idx + 1}
         </div>
@@ -447,15 +474,42 @@ export function SimpleMap({
       });
 
       const utm = wgs84ToUtm(pt.lat, pt.lng);
-      marker.bindTooltip(`Point #${idx + 1}: ${pt.lat.toFixed(8)}°, ${pt.lng.toFixed(8)}° (UTM E:${utm.easting})`, {
-        permanent: false,
-        direction: 'top',
-        offset: [0, -10]
-      });
 
+      // Popup with REMOVE ACTIVE WAYPOINT button
+      const popupContent = document.createElement('div');
+      popupContent.style.fontFamily = '-apple-system, BlinkMacSystemFont, sans-serif';
+      popupContent.style.fontSize = '12px';
+      popupContent.style.lineHeight = '1.4';
+      popupContent.style.color = '#0f172a';
+      popupContent.style.minWidth = '180px';
+
+      popupContent.innerHTML = `
+        <div style="font-weight: 700; color: #0284c7; margin-bottom: 4px;">
+          📍 Active Waypoint #${idx + 1}
+        </div>
+        <div><strong>Lat:</strong> ${pt.lat.toFixed(8)}°</div>
+        <div><strong>Lng:</strong> ${pt.lng.toFixed(8)}°</div>
+        <div style="font-size: 11px; color: #64748b; margin-bottom: 8px;">
+          UTM: E ${utm.easting}m | N ${utm.northing}m
+        </div>
+      `;
+
+      if (onRemoveActiveWaypoint) {
+        const removeBtn = document.createElement('button');
+        removeBtn.innerHTML = '🗑️ Remove This Waypoint';
+        removeBtn.style.cssText = 'background: #ef4444; color: #fff; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 700; width: 100%; display: flex; align-items: center; justify-content: center; gap: 4px;';
+        removeBtn.onclick = (e) => {
+          e.stopPropagation();
+          onRemoveActiveWaypoint(idx);
+          map.closePopup();
+        };
+        popupContent.appendChild(removeBtn);
+      }
+
+      marker.bindPopup(popupContent);
       group.addLayer(marker);
     });
-  }, [currentDrawingPoints]);
+  }, [currentDrawingPoints, onRemoveActiveWaypoint]);
 
   return (
     <div 
