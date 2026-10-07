@@ -4,6 +4,133 @@ import 'leaflet/dist/leaflet.css';
 import { calcDistanceMeters, wgs84ToUtm } from '../utils/coordinateUtils';
 import { PROSPER_CONTAINERS } from '../data/prosperYardContainers';
 
+// Copy text to clipboard (with fallback for non-secure / older browsers)
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // fall through to legacy method
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  }
+  document.body.removeChild(ta);
+  return ok;
+}
+
+const CORNER_LABELS = ['C1', 'C2', 'C3', 'C4'];
+
+// Build the container inspection popup with copy buttons
+function buildContainerPopup(container) {
+  const lat = container.center.lat.toFixed(8);
+  const lng = container.center.lng.toFixed(8);
+  const e = Number(container.center.easting).toFixed(3);
+  const n = Number(container.center.northing).toFixed(3);
+  const cornersText = container.corners
+    .map((c, i) => `${CORNER_LABELS[i]}: ${c[0].toFixed(8)}, ${c[1].toFixed(8)}`)
+    .join('\n');
+
+  const copies = {
+    center: `${lat}, ${lng}`,
+    lat,
+    lng,
+    utm: `${e}, ${n}`,
+    corners: cornersText,
+    all: [
+      `Container: ${container.id}`,
+      `Stack: ${container.stackName}`,
+      `Center: ${lat}, ${lng}`,
+      `UTM ${container.center.zone || '43N'}: E ${e}, N ${n}`,
+      cornersText
+    ].join('\n'),
+    gmaps: `https://www.google.com/maps?q=${lat},${lng}`
+  };
+  container.corners.forEach((c, i) => {
+    copies[`c${i}`] = `${c[0].toFixed(8)}, ${c[1].toFixed(8)}`;
+  });
+
+  const btn = (key, label, primary = false) => `
+    <button type="button" data-copy="${key}" title="Copy to clipboard" style="
+      background: ${primary ? '#0284c7' : '#e2e8f0'};
+      color: ${primary ? '#fff' : '#0f172a'};
+      border: none; border-radius: 4px; padding: ${primary ? '6px 10px' : '2px 7px'};
+      font-size: ${primary ? '12px' : '10.5px'}; font-weight: 700; cursor: pointer; white-space: nowrap;
+    ">${label}</button>`;
+
+  const el = document.createElement('div');
+  el.style.cssText = "font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: #0f172a; min-width: 280px; line-height: 1.45;";
+  el.innerHTML = `
+    <div style="background: #0f172a; color: #fff; padding: 7px 10px; border-radius: 4px 4px 0 0; margin: -9px -14px 8px -14px; display: flex; align-items: center; justify-content: space-between;">
+      <strong style="color: #00f0ff; font-size: 13px;">📦 ${container.id}</strong>
+      <span style="font-size: 10px; background: rgba(0,240,255,0.2); color: #38bdf8; padding: 2px 6px; border-radius: 3px; font-weight: 700;">${container.type}</span>
+    </div>
+    <div><strong>Stack:</strong> ${container.stackName}</div>
+    <div><strong>Bay / Row:</strong> Bay ${container.bayNumber}, Row ${container.row}</div>
+    <div><strong>Dimensions:</strong> ${container.dimensionsMeters} m</div>
+
+    <div style="margin-top: 8px; padding: 6px 8px; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
+      <div style="font-weight: 700; color: #0284c7; margin-bottom: 4px; font-size: 11px;">📍 CENTER</div>
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px;">
+        <span style="font-family: monospace; font-weight: 700; font-size: 12.5px;">${lat}, ${lng}</span>
+      </div>
+      <div style="margin: 6px 0 4px 0;">${btn('center', '📋 Copy Lat, Long', true)}</div>
+      <div style="display: flex; gap: 4px; flex-wrap: wrap;">
+        ${btn('lat', 'Lat')} ${btn('lng', 'Long')} ${btn('gmaps', 'Google Maps link')}
+      </div>
+      <div style="margin-top: 6px; display: flex; align-items: center; justify-content: space-between; gap: 6px;">
+        <span><strong>UTM ${container.center.zone || '43N'}:</strong> <span style="font-family: monospace;">E ${e} | N ${n}</span></span>
+        ${btn('utm', 'Copy')}
+      </div>
+    </div>
+
+    <div style="margin-top: 8px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px;">
+        <span style="font-weight: 700; color: #334155; font-size: 11px;">📐 4 CORNERS</span>
+        ${btn('corners', 'Copy all corners')}
+      </div>
+      <div style="font-size: 10.5px; color: #475569; font-family: monospace; background: #f1f5f9; padding: 5px 8px; border-radius: 4px;">
+        ${container.corners.map((c, i) => `
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 1px 0;">
+            <span>${CORNER_LABELS[i]}: ${c[0].toFixed(8)}, ${c[1].toFixed(8)}</span>
+            ${btn(`c${i}`, 'Copy')}
+          </div>`).join('')}
+      </div>
+    </div>
+
+    <div style="margin-top: 8px;">${btn('all', '📋 Copy everything for this container')}</div>
+    <div data-copy-status role="status" aria-live="polite" style="margin-top: 4px; font-size: 11px; color: #16a34a; font-weight: 700; min-height: 14px;"></div>
+  `;
+
+  const status = el.querySelector('[data-copy-status]');
+  el.addEventListener('click', async (ev) => {
+    const b = ev.target.closest('button[data-copy]');
+    if (!b || b.disabled) return;
+    ev.stopPropagation();
+    const key = b.getAttribute('data-copy');
+    b.disabled = true;
+    const original = b.innerHTML;
+    const ok = await copyText(copies[key]);
+    b.innerHTML = ok ? '✔ Copied' : '✖ Failed';
+    status.style.color = ok ? '#16a34a' : '#dc2626';
+    status.textContent = ok ? `Copied: ${copies[key].split('\n')[0]}${copies[key].includes('\n') ? ' …' : ''}` : 'Copy failed — select the text manually.';
+    setTimeout(() => { b.innerHTML = original; b.disabled = false; }, 1200);
+  });
+
+  return el;
+}
+
 export function SimpleMap({ 
   base, 
   rover, 
@@ -20,6 +147,8 @@ export function SimpleMap({
   containers = PROSPER_CONTAINERS,
   isBoundaryMode = false,
   yardBoundary = [],
+  yardBuildings = [],
+  buildingDraft = [],
   onBoundaryClick
 }) {
   const mapContainerRef = useRef(null);
@@ -295,6 +424,15 @@ export function SimpleMap({
     group.clearLayers();
     if (!yardBoundary || yardBoundary.length === 0) return;
 
+    [...yardBuildings, ...(buildingDraft.length ? [buildingDraft] : [])].forEach((points, index) => {
+      const coords = points.map(p => [p.lat, p.lng]);
+      const options = { color: '#ef4444', weight: 3, fillColor: '#ef4444', fillOpacity: 0.25, interactive: false };
+      const shape = coords.length >= 3 ? L.polygon(coords, options) : L.polyline(coords, options);
+      shape.bindTooltip(index < yardBuildings.length ? `Building ${index + 1} — no containers` : 'Building outline', { permanent: true, direction: 'center' });
+      group.addLayer(shape);
+      if (isBoundaryMode) coords.forEach(ll => group.addLayer(L.circleMarker(ll, { ...options, radius: 4 })));
+    });
+
     const latlngs = yardBoundary.map(p => [p.lat, p.lng]);
     const style = {
       color: '#facc15',
@@ -324,7 +462,7 @@ export function SimpleMap({
         }).bindTooltip(`${idx + 1}`, { permanent: true, direction: 'top', offset: [0, -6] }));
       });
     }
-  }, [yardBoundary, isBoundaryMode]);
+  }, [yardBoundary, isBoundaryMode, yardBuildings, buildingDraft]);
 
   // 4b. Render Container Bay Polygons (demo layout or auto-filled yard)
   useEffect(() => {
@@ -373,38 +511,8 @@ export function SimpleMap({
         opacity: 0.95
       });
 
-      // Rich inspection popup with cm coordinates
-      const popupHtml = `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: #0f172a; min-width: 270px; line-height: 1.45;">
-          <div style="background: #0f172a; color: #fff; padding: 7px 10px; border-radius: 4px 4px 0 0; margin: -9px -14px 8px -14px; display: flex; align-items: center; justify-content: space-between;">
-            <strong style="color: #00f0ff; font-size: 13px;">📦 ${container.id}</strong>
-            <span style="font-size: 10px; background: rgba(0,240,255,0.2); color: #38bdf8; padding: 2px 6px; border-radius: 3px; font-weight: 700;">${container.type}</span>
-          </div>
-          <div><strong>Stack:</strong> ${container.stackName}</div>
-          <div><strong>Bay / Row:</strong> Bay ${container.bayNumber}, Row ${container.row}</div>
-          <div><strong>Dimensions:</strong> ${container.dimensionsMeters} m</div>
-          
-          <div style="margin-top: 8px; padding: 6px 8px; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
-            <div style="font-weight: 700; color: #0284c7; margin-bottom: 3px; font-size: 11px;">📍 CENTER (CM-LEVEL ACCURACY):</div>
-            <div><strong>Lat:</strong> <span style="font-family: monospace; font-weight: 600;">${container.center.lat.toFixed(8)}°</span></div>
-            <div><strong>Lng:</strong> <span style="font-family: monospace; font-weight: 600;">${container.center.lng.toFixed(8)}°</span></div>
-            <div><strong>UTM 43N:</strong> <span style="font-family: monospace; font-weight: 600;">E ${container.center.easting.toFixed(3)}m | N ${container.center.northing.toFixed(3)}m</span></div>
-            <div><strong>Elevation:</strong> ${container.center.alt} m MSL</div>
-          </div>
-
-          <div style="margin-top: 8px;">
-            <div style="font-weight: 700; color: #334155; font-size: 11px; margin-bottom: 3px;">📐 4 SURVEYED CORNER VERTICES:</div>
-            <div style="font-size: 10.5px; color: #475569; font-family: monospace; background: #f1f5f9; padding: 5px 8px; border-radius: 4px;">
-              <div>• NW: ${container.corners[0][0].toFixed(8)}°, ${container.corners[0][1].toFixed(8)}°</div>
-              <div>• NE: ${container.corners[1][0].toFixed(8)}°, ${container.corners[1][1].toFixed(8)}°</div>
-              <div>• SE: ${container.corners[2][0].toFixed(8)}°, ${container.corners[2][1].toFixed(8)}°</div>
-              <div>• SW: ${container.corners[3][0].toFixed(8)}°, ${container.corners[3][1].toFixed(8)}°</div>
-            </div>
-          </div>
-        </div>
-      `;
-
-      polygon.bindPopup(popupHtml);
+      // Rich inspection popup with cm coordinates + copy buttons (built lazily on click)
+      polygon.bindPopup(() => buildContainerPopup(container), { minWidth: 290 });
       group.addLayer(polygon);
     });
   }, [showContainerBays, containers, isBoundaryMode, isDrawingMode]);
