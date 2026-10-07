@@ -191,45 +191,54 @@ export function App() {
               setRover(data.rover);
               setIsSimulating(Boolean(data.rover.is_simulated));
 
-              // AUTOMATIC MOVEMENT RECORDING FOR ROVER
-              if (isRecordingRoverRef.current && data.rover.latitude && data.rover.longitude) {
-                const lat = data.rover.latitude;
-                const lng = data.rover.longitude;
-                const pts = recordedRoverPointsRef.current;
+              // AUTOMATIC MOVEMENT RECORDING (Supports Rover or Base COM3 hardware)
+              if (isRecordingRoverRef.current) {
+                // Determine active tracking source: Rover if active/moving, else Base hardware (COM3)
+                const activeDevice = (data.rover && data.rover.connected && data.rover.latitude) 
+                  ? data.rover 
+                  : ((data.base && data.base.latitude) ? data.base : null);
 
-                if (pts.length === 0) {
-                  // Anchor initial point
-                  const p0 = {
-                    name: `ROVER_PT_001`,
-                    lat: Number(lat.toFixed(8)),
-                    lng: Number(lng.toFixed(8)),
-                    alt: Number((data.rover.altitude || 14.0).toFixed(3)),
-                    speed: data.rover.speed_kmh || 0.0,
-                    fixQuality: data.rover.fix_status_text || "RTK FIXED (cm accuracy)",
-                    isRtkLogged: true,
-                    timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19)
-                  };
-                  pts.push(p0);
-                  setCurrentDrawingPoints([p0]);
-                } else {
-                  const last = pts[pts.length - 1];
-                  const dist = calcDistanceMeters(last.lat, last.lng, lat, lng);
-                  const threshold = recordIntervalMetersRef.current;
+                if (activeDevice && activeDevice.latitude && activeDevice.longitude) {
+                  const lat = activeDevice.latitude;
+                  const lng = activeDevice.longitude;
+                  const pts = recordedRoverPointsRef.current;
+                  const isRover = Boolean(data.rover && data.rover.connected && data.rover.latitude);
+                  const devicePrefix = isRover ? "ROVER" : "BASE_WALK";
 
-                  // Append point when rover moves beyond threshold (or 0.2m min if continuous)
-                  if (dist >= (threshold > 0 ? threshold : 0.25)) {
-                    const nextPt = {
-                      name: `ROVER_PT_${String(pts.length + 1).padStart(3, '0')}`,
+                  if (pts.length === 0) {
+                    // Anchor initial point
+                    const p0 = {
+                      name: `${devicePrefix}_PT_001`,
                       lat: Number(lat.toFixed(8)),
                       lng: Number(lng.toFixed(8)),
-                      alt: Number((data.rover.altitude || 14.0).toFixed(3)),
-                      speed: data.rover.speed_kmh || 0.0,
-                      fixQuality: data.rover.fix_status_text || "RTK FIXED (cm accuracy)",
+                      alt: Number((activeDevice.altitude || 14.0).toFixed(3)),
+                      speed: activeDevice.speed_kmh || activeDevice.speed_knots || 0.0,
+                      fixQuality: activeDevice.fix_status_text || "RTK / DGPS FIXED (cm accuracy)",
                       isRtkLogged: true,
                       timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19)
                     };
-                    pts.push(nextPt);
-                    setCurrentDrawingPoints([...pts]);
+                    pts.push(p0);
+                    setCurrentDrawingPoints([p0]);
+                  } else {
+                    const last = pts[pts.length - 1];
+                    const dist = calcDistanceMeters(last.lat, last.lng, lat, lng);
+                    const threshold = recordIntervalMetersRef.current;
+
+                    // Append point when device moves beyond threshold
+                    if (dist >= (threshold > 0 ? threshold : 0.25)) {
+                      const nextPt = {
+                        name: `${devicePrefix}_PT_${String(pts.length + 1).padStart(3, '0')}`,
+                        lat: Number(lat.toFixed(8)),
+                        lng: Number(lng.toFixed(8)),
+                        alt: Number((activeDevice.altitude || 14.0).toFixed(3)),
+                        speed: activeDevice.speed_kmh || activeDevice.speed_knots || 0.0,
+                        fixQuality: activeDevice.fix_status_text || "RTK / DGPS FIXED (cm accuracy)",
+                        isRtkLogged: true,
+                        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19)
+                      };
+                      pts.push(nextPt);
+                      setCurrentDrawingPoints([...pts]);
+                    }
                   }
                 }
               }
