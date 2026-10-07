@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { calcDistanceMeters, wgs84ToUtm } from '../utils/coordinateUtils';
+import { PROSPER_CONTAINERS } from '../data/prosperYardContainers';
 
 export function SimpleMap({ 
   base, 
@@ -26,9 +27,10 @@ export function SimpleMap({
   const satelliteLayerRef = useRef(null);
   const hasCenteredRef = useRef(false);
 
-  // Layer groups for survey lines and drawing preview
+  // Layer groups for survey lines, dynamic drawing, and container geofences
   const surveyLayersRef = useRef(null);
   const drawingLayerRef = useRef(null);
+  const containerLayerRef = useRef(null);
 
   // 1. Initialize Map
   useEffect(() => {
@@ -68,7 +70,8 @@ export function SimpleMap({
     satelliteLayerRef.current = satelliteLayer;
     satelliteLayer.addTo(map);
 
-    // Feature group layers for survey lines & dynamic drawing
+    // Feature group layers for survey lines, containers & dynamic drawing
+    containerLayerRef.current = L.featureGroup().addTo(map);
     surveyLayersRef.current = L.featureGroup().addTo(map);
     drawingLayerRef.current = L.featureGroup().addTo(map);
 
@@ -271,6 +274,87 @@ export function SimpleMap({
       }
     };
   }, [isDrawingMode, onMapClick]);
+
+  // 4b. Render Prosper CFS Surveyed Container Bay Polygons (152 Slots)
+  useEffect(() => {
+    const map = mapRef.current;
+    const group = containerLayerRef.current;
+    if (!map || !group) return;
+
+    group.clearLayers();
+
+    if (!showContainerBays) return;
+
+    PROSPER_CONTAINERS.forEach((container) => {
+      const polygon = L.polygon(container.corners, {
+        color: container.borderColor || '#0284c7',
+        fillColor: container.color || '#00f0ff',
+        fillOpacity: 0.42,
+        weight: 1.5
+      });
+
+      // Interactive hover highlight
+      polygon.on('mouseover', () => {
+        polygon.setStyle({
+          fillOpacity: 0.85,
+          weight: 2.5
+        });
+      });
+
+      polygon.on('mouseout', () => {
+        polygon.setStyle({
+          fillOpacity: 0.42,
+          weight: 1.5
+        });
+      });
+
+      // Quick hover tooltip showing Slot ID and Bay
+      polygon.bindTooltip(`
+        <div style="font-family: monospace; font-size: 11px; font-weight: 700;">
+          📦 ${container.id} (${container.row})<br/>
+          <span style="font-weight: 400; font-size: 10px; color: #64748b;">${container.type}</span>
+        </div>
+      `, {
+        sticky: true,
+        direction: 'top',
+        opacity: 0.95
+      });
+
+      // Rich inspection popup with cm coordinates
+      const popupHtml = `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: #0f172a; min-width: 270px; line-height: 1.45;">
+          <div style="background: #0f172a; color: #fff; padding: 7px 10px; border-radius: 4px 4px 0 0; margin: -9px -14px 8px -14px; display: flex; align-items: center; justify-content: space-between;">
+            <strong style="color: #00f0ff; font-size: 13px;">📦 ${container.id}</strong>
+            <span style="font-size: 10px; background: rgba(0,240,255,0.2); color: #38bdf8; padding: 2px 6px; border-radius: 3px; font-weight: 700;">${container.type}</span>
+          </div>
+          <div><strong>Stack:</strong> ${container.stackName}</div>
+          <div><strong>Bay / Row:</strong> Bay ${container.bayNumber}, Row ${container.row}</div>
+          <div><strong>Dimensions:</strong> ${container.dimensionsMeters} m</div>
+          
+          <div style="margin-top: 8px; padding: 6px 8px; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
+            <div style="font-weight: 700; color: #0284c7; margin-bottom: 3px; font-size: 11px;">📍 CENTER (CM-LEVEL ACCURACY):</div>
+            <div><strong>Lat:</strong> <span style="font-family: monospace; font-weight: 600;">${container.center.lat.toFixed(8)}°</span></div>
+            <div><strong>Lng:</strong> <span style="font-family: monospace; font-weight: 600;">${container.center.lng.toFixed(8)}°</span></div>
+            <div><strong>UTM 43N:</strong> <span style="font-family: monospace; font-weight: 600;">E ${container.center.easting.toFixed(3)}m | N ${container.center.northing.toFixed(3)}m</span></div>
+            <div><strong>Elevation:</strong> ${container.center.alt} m MSL</div>
+          </div>
+
+          <div style="margin-top: 8px;">
+            <div style="font-weight: 700; color: #334155; font-size: 11px; margin-bottom: 3px;">📐 4 SURVEYED CORNER VERTICES:</div>
+            <div style="font-size: 10.5px; color: #475569; font-family: monospace; background: #f1f5f9; padding: 5px 8px; border-radius: 4px;">
+              <div>• NW: ${container.corners[0][0].toFixed(8)}°, ${container.corners[0][1].toFixed(8)}°</div>
+              <div>• NE: ${container.corners[1][0].toFixed(8)}°, ${container.corners[1][1].toFixed(8)}°</div>
+              <div>• SE: ${container.corners[2][0].toFixed(8)}°, ${container.corners[2][1].toFixed(8)}°</div>
+              <div>• SW: ${container.corners[3][0].toFixed(8)}°, ${container.corners[3][1].toFixed(8)}°</div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      polygon.bindPopup(popupHtml);
+      group.addLayer(polygon);
+    });
+  }, [showContainerBays]);
 
   // 5. Render Completed Survey Lines & Vertices
   useEffect(() => {

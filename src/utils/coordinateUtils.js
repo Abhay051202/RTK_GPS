@@ -286,39 +286,58 @@ export function exportSurveyToExcel(features, options = {}) {
     });
   });
 
+  // 4. All Prosper Yard Container Boxes (152 Slots with 4 Corners & Center)
+  let prosperSlotsRows = [];
+  if (options.containers && Array.isArray(options.containers)) {
+    prosperSlotsRows = options.containers.map(c => ({
+      "Container Bay ID": c.id,
+      "Stack Name": c.stackName,
+      "Bay Number": c.bayNumber,
+      "Row": c.row,
+      "Container Size": c.type,
+      "Dimensions (m)": c.dimensionsMeters,
+      "Center Latitude (deg)": c.center.lat,
+      "Center Longitude (deg)": c.center.lng,
+      "Center UTM Easting (m)": c.center.easting,
+      "Center UTM Northing (m)": c.center.northing,
+      "UTM Zone": c.center.zone,
+      "Elevation MSL (m)": c.center.alt || 14.1,
+      "Corner 1 NW Lat": c.corners[0][0],
+      "Corner 1 NW Lng": c.corners[0][1],
+      "Corner 1 NW Easting (m)": c.cornersUtm[0].easting,
+      "Corner 1 NW Northing (m)": c.cornersUtm[0].northing,
+      "Corner 2 NE Lat": c.corners[1][0],
+      "Corner 2 NE Lng": c.corners[1][1],
+      "Corner 2 NE Easting (m)": c.cornersUtm[1].easting,
+      "Corner 2 NE Northing (m)": c.cornersUtm[1].northing,
+      "Corner 3 SE Lat": c.corners[2][0],
+      "Corner 3 SE Lng": c.corners[2][1],
+      "Corner 3 SE Easting (m)": c.cornersUtm[2].easting,
+      "Corner 3 SE Northing (m)": c.cornersUtm[2].northing,
+      "Corner 4 SW Lat": c.corners[3][0],
+      "Corner 4 SW Lng": c.corners[3][1],
+      "Corner 4 SW Easting (m)": c.cornersUtm[3].easting,
+      "Corner 4 SW Northing (m)": c.cornersUtm[3].northing
+    }));
+  }
+
   // Build XLSX Workbook
   const wb = XLSX.utils.book_new();
+
+  if (prosperSlotsRows.length > 0) {
+    const wsProsper = XLSX.utils.json_to_sheet(prosperSlotsRows);
+    XLSX.utils.book_append_sheet(wb, wsProsper, "Prosper_Containers_152_Slots");
+  }
 
   const wsPoints = XLSX.utils.json_to_sheet(pointsRows);
   const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
   const wsBaySlots = XLSX.utils.json_to_sheet(baySlotsRows);
 
-  // Set column widths for clean readability
-  const colWidths = [
-    { wch: 18 }, // Point ID
-    { wch: 25 }, // Feature Name
-    { wch: 15 }, // Type
-    { wch: 18 }, // Lat
-    { wch: 18 }, // Lng
-    { wch: 18 }, // Easting
-    { wch: 18 }, // Northing
-    { wch: 12 }, // Zone
-    { wch: 18 }, // Elevation
-    { wch: 20 }, // Seg Length
-    { wch: 22 }, // Cum Dist
-    { wch: 24 }, // Fix Quality
-    { wch: 20 }, // Method
-    { wch: 20 }  // Timestamp
-  ];
-  wsPoints['!cols'] = colWidths;
-  wsSummary['!cols'] = colWidths;
-  wsBaySlots['!cols'] = colWidths;
-
   XLSX.utils.book_append_sheet(wb, wsPoints, "Survey_Coordinates_CM");
   XLSX.utils.book_append_sheet(wb, wsSummary, "Lines_Summary");
   XLSX.utils.book_append_sheet(wb, wsBaySlots, "Container_Bay_Slots");
 
-  const fileName = `Yard_RTK_Survey_${yardName.replace(/[^a-zA-Z0-9]/g, '_')}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  const fileName = `Prosper_CFS_Container_Survey_${new Date().toISOString().slice(0, 10)}.xlsx`;
   XLSX.writeFile(wb, fileName);
 
   return fileName;

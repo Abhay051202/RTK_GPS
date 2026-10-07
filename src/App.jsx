@@ -32,6 +32,7 @@ import {
   wgs84ToUtm, 
   exportSurveyToExcel 
 } from './utils/coordinateUtils';
+import { PROSPER_CONTAINERS } from './data/prosperYardContainers';
 
 const DEFAULT_SAMPLE_LINES = [
   {
@@ -450,7 +451,8 @@ export function App() {
       try {
         const fileName = exportSurveyToExcel([lineObj], {
           yardName: lineObj.name.replace(/\s+/g, '_'),
-          slotSpacing: 6.1
+          slotSpacing: 6.1,
+          containers: PROSPER_CONTAINERS
         });
         showToast(`✅ Saved & Downloaded Excel: ${fileName}!`);
       } catch (err) {
@@ -482,17 +484,13 @@ export function App() {
 
   // Export to Excel (.xlsx) with cm-level accuracy
   const handleExportExcel = () => {
-    if (surveyLines.length === 0) {
-      showToast("⚠️ No surveyed lines to export. Draw or record a line first!");
-      return;
-    }
-
     try {
       const fileName = exportSurveyToExcel(surveyLines, {
         yardName: "Prosper_CFS_Nhava_Sheva",
-        slotSpacing: 6.1 // 20ft container bay
+        slotSpacing: 6.1, // 20ft container bay
+        containers: PROSPER_CONTAINERS
       });
-      showToast(`📊 Downloaded Excel: ${fileName} (Centimeter Precision)`);
+      showToast(`📊 Downloaded Excel: ${fileName} (152 Container Geofences Included!)`);
     } catch (err) {
       console.error(err);
       window.open('http://127.0.0.1:8000/api/survey/export-excel', '_blank');
@@ -714,6 +712,28 @@ export function App() {
           >
             <FileSpreadsheet size={15} />
             <span>Export Excel (.xlsx)</span>
+          </button>
+
+          {/* 4. CONTAINER GEOFENCES TOGGLE (152 SLOTS) */}
+          <button
+            onClick={() => setShowContainerBays(prev => !prev)}
+            title="Toggle 152 surveyed Prosper CFS container slots on map"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              backgroundColor: showContainerBays ? 'rgba(0, 240, 255, 0.18)' : '#1e293b',
+              color: showContainerBays ? '#00f0ff' : '#94a3b8',
+              border: `1px solid ${showContainerBays ? '#00f0ff' : 'rgba(255, 255, 255, 0.15)'}`,
+              padding: '6px 12px',
+              borderRadius: '6px',
+              fontSize: '12px',
+              fontWeight: 700,
+              cursor: 'pointer',
+              boxShadow: showContainerBays ? '0 0 10px rgba(0, 240, 255, 0.3)' : 'none'
+            }}
+          >
+            <span>📦 Containers (152)</span>
           </button>
 
           <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255, 255, 255, 0.2)', margin: '0 4px' }} />
