@@ -1,79 +1,66 @@
-# RTK Base & Rover Monitoring Application
-### Industrial Command Center for Reach Stacker & Container Yard Automation
+# RTK Base & Rover Yard Surveying & Mapping Application
+### Industrial RTK GNSS Mapping, Container Yard Surveying & Centimeter-Accuracy Excel Exporter
 
-Modern, high-precision industrial robotics command interface for monitoring an RTK GNSS Base Station, real-time yard operations, and future autonomous Reach Stacker Rover fleets.
+A high-precision RTK GNSS field mapping and yard operation system designed for surveying container terminals, stack bays, traffic lanes, and boundaries with physical RTK Base and Rover units.
 
 ---
 
 ## 🚀 Key Features
 
-### 1. High-Precision Tactical Yard Map (~80% Viewport)
-* **Real-time Map Visualization**: Dark vector tactical basemap and high-resolution satellite imagery toggle.
-* **Yard Layout & Infrastructure**:
-  * Container Blocks A (Inbound Dry Cargo) & B (Export Outbound) with individual bay slots.
-  * Block R: Temperature-monitored Reefer power racks.
-  * Zone H: Hazardous Materials (Hazmat Class 3) restricted exclusion zone.
-  * Fleet Depot: Reach Stacker charging bays and maintenance stalls.
-  * Main OCR Gate & Weighbridge scales.
-* **Driving Corridors & Lanes**: Heavy transit runways, automated work aisles, quayside haul routes with speed limit guidelines.
-* **Safety Geofencing**: Real-time operational perimeter boundaries and automated stacker corridors.
-* **Animated Industrial Base Marker**:
-  * Custom multi-stage pulsing radio beacon.
-  * 360° rotating radar sweep cone.
-  * Live status badge (`● BASE // ONLINE`).
-  * 850m RTK centimeter-accuracy broadcast range ring.
-* **HUD Map Controls**:
-  * Smooth zoom controls, fullscreen toggle, North-reset compass rose, and tactical 50m scale bar.
-  * Dynamic crosshair coordinates tracking under cursor (Lat/Lng and UTM Zone 42N).
-
-### 2. Base Station Monitoring & RTCM Telemetry
-* **Positioning**: Multi-band GNSS L1/L2/L5 RTK Fixed solution with horizontal accuracy of ±6 mm and vertical accuracy of ±12 mm.
-* **Live Caster Stream**: RTCM 3.2 MSM4 message streams (1005, 1074, 1084, 1094, 1124) broadcast at 10 Hz over Gigabit Ethernet PoE+.
-* **Diagnostics**: Satellite Signal-to-Noise Ratio (SNR) live meters across GPS, GLONASS, GALILEO, and BEIDOU constellations.
-* **Hardware Health**: Voltage, operating temperature, CPU load, and antenna loop current monitoring.
-
-### 3. Modular Future Rover & Reach Stacker Architecture
-The application is structured to support seamless connection of the autonomous Reach Stacker Rover without modifying the Base Station foundation:
-
-```
-BASE (Current V1 Focus)
-├── GPS (L1/L2/L5 RTK Fixed Reference, ±6mm Accuracy)
-├── Communication (NTRIP Caster, RTCM 3.2 MSM4, 1000BASE-T)
-├── Site Map (Bays A1-A8, B1-B8, Reefer, Hazmat, Roads)
-└── Geofence (Terminal Perimeter, Class 3 Hazmat, Stacker Guideway)
-    │
-    └── ROVER (Architecture Placeholder / V2 Target)
-        ├── Location (Centimeter-accurate Real-time Waypoint Tracking)
-        ├── Battery (Pack Voltage, SoC %, Thermal Monitor)
-        ├── Status (Active / Standby / Docked / Error)
-        ├── Navigation (Corridor Waypoints, Collision Avoidance LiDAR)
-        ├── Mission (Bay Pickup, Stack Deposit, Quayside Transfer)
-        └── Telemetry (J1939 CANbus, Boom Angle, Twistlocks, 45T Load)
-```
+### 1. Interactive Yard Survey & Line Drawing
+* **✏️ Draw Yard Lines**: Click directly on high-resolution satellite imagery or street maps to survey container stack bays, truck transit lanes, perimeter walls, and crane rails.
+* **📌 Log RTK Point (Field Rover Sync)**: Carrying the physical RTK Rover unit in the yard? Tap one button to log the current live cm-accurate GNSS coordinate as the next vertex in the survey line.
+* **Live On-Map Geodesy**:
+  * Real-time segment & cumulative line distance in meters with **centimeter precision** (e.g. `103.45 m`).
+  * Vertex badges and dynamic estimation of **20ft (6.1m)** and **40ft (12.2m)** container bay slots.
+  * Undo point, finish line, or cancel at any moment.
+* **Line Metadata & Categorization**: Name each surveyed line (e.g. `Bay Row 01 (Import Stack)`, `Main Truck Lane`) and assign categories and display colors.
+* **Container Bay Slot Markings**: Toggle to render 6.1m container slot markers along all surveyed lines.
 
 ---
 
-## 🐍 Python Backend & USB Hardware Integration
+### 2. Centimeter-Accurate Excel Generation (`.xlsx`)
+Export all surveyed lines, vertices, and container slots into a multi-sheet spreadsheet:
 
-The backend is built in **Python (FastAPI + PySerial + PyNMEA2 + WebSockets)**:
-* **Hardware Chip Detected**: `USB Serial Device (COM3)`
-* **Device**: u-blox Multi-Constellation GNSS / RTK Receiver (`VID: 0x1546`, `PID: 0x01A9`)
+| Sheet Name | Description & Columns | Precision |
+| :--- | :--- | :--- |
+| **`Survey_Coordinates_CM`** | Point ID, Feature Name, Latitude, Longitude, UTM Easting, UTM Northing, UTM Zone (43N), Elevation MSL, Segment Length, Cumulative Distance, RTK Fix Quality, Survey Method, Timestamp | WGS-84 Lat/Lng to **8 decimal places** (`~1.1 mm`), UTM Easting/Northing in meters to **3 decimals** (`1 mm`) |
+| **`Lines_Summary`** | Line ID, Feature Name, Category, Total Length (m & ft), Vertices Count, Estimated 20ft Bays (6.1m), Estimated 40ft Bays (12.2m), Start Easting/Northing, End Easting/Northing, Color | Summary lengths to **cm level** |
+| **`Container_Bay_Slots`** | Auto-interpolates individual 20ft container bay parking slots (at 6.1m intervals) along every line, giving each container slot its own GPS & UTM coordinates | Georeferenced parking coordinates for Terminal Operating Systems (TOS) & WMS |
+
+---
+
+### 3. Dual Hardware Positioning (Base & Rover)
+* **Base Station**: USB Serial reader connected to physical u-blox RTK GNSS chip on `COM3` broadcasting DGPS / RTK corrections.
+* **Rover Unit**: Real-time telemetry support over WebSocket and HTTP POST (`/api/rover/telemetry`) for remote field rovers, reach stackers, and survey poles.
+* **Real-time Baseline**: Real-time vector line connecting Base Station to Rover with dynamic distance measurement.
+
+---
+
+## 🐍 Backend Architecture
+
+Built with **FastAPI**, **PySerial**, **PyNMEA2**, **openpyxl**, and **WebSockets**:
+* **Hardware Port**: `USB Serial Device (COM3)`
+* **Device**: u-blox Multi-Constellation GNSS Receiver (`VID: 0x1546`, `PID: 0x01A9`)
 * **Baud Rate**: `115200 baud`
-* **Protocol**: NMEA 0183 (`$GNGGA`, `$GNRMC`, `$GNGSA`, `$GPGSV`, `$GLGSV`, `$GAGSV`, `$GBGSV`)
-* **Real-time Live Telemetry**: Streamed over WebSocket at `ws://127.0.0.1:8000/ws/telemetry` at 10 Hz.
+* **Protocols**: NMEA 0183 (`$GNGGA`, `$GNRMC`, `$GNGSA`, `$GPGSV`, `$GLGSV`, `$GAGSV`, `$GBGSV`)
+* **Persistence**: Saved survey features stored in `backend/survey_features.json`
 
-### 🏃 Quick Start (One-Click)
-Double-click **`start.bat`** in the project folder to start both:
-1. Python GNSS Telemetry Server on `http://127.0.0.1:8000`
-2. React Command Center UI on `http://127.0.0.1:5173`
+---
 
-Or start them manually:
+## 🏃 Quick Start
+
+### 1. Start Python Backend
 ```powershell
-# 1. Start Python Backend
 cd backend
-python -m uvicorn main:app --host 127.0.0.1 --port 8000
+python main.py
+```
+Backend runs at `http://127.0.0.1:8000` with WebSocket telemetry at `ws://127.0.0.1:8000/ws/telemetry`.
 
-# 2. Start Frontend UI (in another terminal)
+### 2. Start Frontend UI
+```powershell
+# From project root
+npm install
 npm run dev
 ```
 Open [http://localhost:5173](http://localhost:5173) in your browser.
