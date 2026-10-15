@@ -26,3 +26,4 @@ __pycache__/
 .venv/
 venv/
 ENV/
+backend/rover_readings.sqlite3*

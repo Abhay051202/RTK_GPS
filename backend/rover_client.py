@@ -156,11 +156,11 @@ def run_hardware_rover(port, baudrate, host, device_id):
 
 
 def run_simulated_rover(host, device_id):
-    print(f"\n[SIMULATION] Starting Simulated Rover walking in Prosper CFS Yard...")
+    print(f"\n[SIMULATION] Starting Simulated Rover telemetry...")
     print(f"[SIMULATION] Streaming coordinates to http://{host}/api/rover/telemetry")
     print("[SIMULATION] Press Ctrl+C to stop.\n")
 
-    # Center of yard near base station
+    # Simulation center near base station
     center_lat = 18.903250
     center_lng = 73.046550
     radius_lat = 0.00045 # ~50m
@@ -169,7 +169,7 @@ def run_simulated_rover(host, device_id):
     t = 0.0
     while True:
         try:
-            # Elliptical path along yard container bays
+            # Elliptical test trajectory
             lat = center_lat + radius_lat * math.sin(t)
             lng = center_lng + radius_lng * math.cos(t)
             heading = round((math.degrees(-t) + 360) % 360, 1)
@@ -206,7 +206,7 @@ def main():
     parser.add_argument("--baud", type=int, default=115200, help="Baud rate (default: 115200)")
     parser.add_argument("--host", type=str, default="127.0.0.1:8000", help="Base station server host:port (default: 127.0.0.1:8000)")
     parser.add_argument("--device", type=str, default="ROVER-RS-01", help="Rover Device ID (default: ROVER-RS-01)")
-    parser.add_argument("--simulate", action="store_true", help="Run simulated rover walking in yard")
+    parser.add_argument("--simulate", action="store_true", help="Run simulated rover telemetry")
     parser.add_argument("--auto", action="store_true", help="Auto-detect and list available serial ports")
 
     args = parser.parse_args()

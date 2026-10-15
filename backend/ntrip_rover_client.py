@@ -1,11 +1,11 @@
 """
 NTRIP Rover Client & RTCM Injector (Downloads from RTK2GO)
 ===========================================================
-Runs on LAPTOP 2 (Rover in the Yard).
+Runs on LAPTOP 2 (Rover receiver).
 1. Pulls RTCM3 differential corrections over 4G/Internet from rtk2go.com.
 2. Injects RTCM3 bytes into the Rover's USB Serial COM port.
 3. Reads the resulting cm-accurate NMEA coordinates from the Rover.
-4. Forwards live RTK FIXED coordinates to the Yard Survey Map (http://127.0.0.1:8000).
+4. Forwards live RTK FIXED coordinates to the Rover Tracking Dashboard (http://127.0.0.1:8000).
 
 Usage:
   python ntrip_rover_client.py --port COM3 --mountpoint PROSPER_CFS_01
