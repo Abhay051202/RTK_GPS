@@ -220,7 +220,10 @@ class GNSSReader:
                     time.sleep(reconnect_s)
 
     def _open_and_configure(self) -> None:
-        ser = serial.Serial(self.port, self.baudrate, timeout=0.5, write_timeout=2)
+        port_name = self.port
+        if port_name.upper().startswith("COM") and not port_name.startswith(r"\\.\\"):
+            port_name = rf"\\.\{port_name}"
+        ser = serial.Serial(port_name, self.baudrate, timeout=0.5, write_timeout=2)
         with self._serial_lock:
             self._serial = ser
         self._decoder = GNSSStreamDecoder()
