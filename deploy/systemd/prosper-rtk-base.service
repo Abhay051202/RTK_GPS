@@ -1,0 +1,21 @@
+[Unit]
+Description=Prosper CFS RTK Base + Control Center
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=prosperrtk
+Group=prosperrtk
+SupplementaryGroups=dialout
+WorkingDirectory=/opt/prosper-rtk/backend
+EnvironmentFile=/etc/prosper-rtk/base.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/prosper-rtk/.venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

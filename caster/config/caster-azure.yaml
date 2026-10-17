@@ -1,0 +1,22 @@
+listen_host: 0.0.0.0
+listen_port: 443
+read_timeout_s: 30
+source_idle_timeout_s: 20
+client_queue_chunks: 128
+
+tls:
+  enabled: true
+  certfile: /etc/prosper-ntrip/tls/fullchain.pem
+  keyfile: /etc/prosper-ntrip/tls/privkey.pem
+
+admin:
+  username: admin
+  password: ${CASTER_ADMIN_PASSWORD}
+
+mountpoints:
+  SARVESHWAR-CFS-BASE01:
+    source_password: ${NTRIP_SOURCE_PASSWORD}
+    rover_users:
+      RS-01: ${NTRIP_RS01_PASSWORD}
+      RS-02: ${NTRIP_RS02_PASSWORD}
+      LAB-ROVER: ${NTRIP_LAB_ROVER_PASSWORD}

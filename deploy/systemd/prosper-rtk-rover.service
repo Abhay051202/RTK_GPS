@@ -1,0 +1,21 @@
+[Unit]
+Description=Prosper CFS RTK Reach Stacker Rover Agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=prosperrtk
+Group=prosperrtk
+SupplementaryGroups=dialout
+WorkingDirectory=/opt/prosper-rtk/backend
+EnvironmentFile=/etc/prosper-rtk/rover.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/prosper-rtk/.venv/bin/python /opt/prosper-rtk/backend/ntrip_rover_client.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

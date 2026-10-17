@@ -1,434 +1,322 @@
-"""
-Real-time GNSS Serial Reader for u-blox RTK Base Station
-- Reads raw serial stream from hardware USB COM port (e.g. COM6)
-- Automatically streams raw RTCM3 differential corrections to the Prosper Azure NTRIP Caster:
-    Host:       rtk.prosperinfotech.com:443 (TLS)
-    Mountpoint: SARVESHWAR-CFS-BASE01
-- Parses NMEA sentences (GGA, RMC, GSA, GSV) to feed the live dashboard.
-"""
+"""Production ZED-F9P Base service.
 
-import math
-import os
-import queue
-import socket
-import ssl
+This module combines the strongest parts of the original Prosper RTK core with
+the offshore monitoring application:
+- explicitly configures the F9P Base (Survey-In or surveyed Fixed coordinates)
+- enables the required RTCM3 messages
+- decodes NAV-PVT/NAV-HPPOSLLH/NAV-SVIN for real receiver status
+- forwards CRC-valid RTCM3 frames only to the central NTRIP caster
+- automatically reconnects the serial receiver and the NTRIP publisher
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
 import threading
 import time
+from typing import Any
+
 import pynmea2
 import serial
 import serial.tools.list_ports
 
-DEFAULT_CASTER_HOST = "rtk.prosperinfotech.com"
-DEFAULT_CASTER_PORT = 443
-DEFAULT_MOUNTPOINT = "SARVESHWAR-CFS-BASE01"
-DEFAULT_SOURCE_PASSWORD = os.environ.get(
-    "NTRIP_SOURCE_PASSWORD",
-    "1626e00b933feef1e11a6aa7b572d352e866e1187df79146"
+from gnss_protocol import (
+    GNSSStreamDecoder,
+    parse_ubx_nav_hpposllh,
+    parse_ubx_nav_pvt,
+    parse_ubx_nav_svin,
+    rtcm_message_type,
 )
+from ntrip import NtripSourceWorker
+from settings import env, env_bool, env_float, env_int
+from ublox_config import BaseReceiverConfig, configure_base
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 class GNSSReader:
-    def __init__(self, port="COM6", baudrate=115200, enable_azure_caster=True):
+    def __init__(
+        self,
+        port: str,
+        baudrate: int = 115200,
+        enable_azure_caster: bool = True,
+        source_password: str | None = None,
+        caster_host: str = "rtk.prosperinfotech.com",
+        caster_port: int = 443,
+        mountpoint: str = "SARVESHWAR-CFS-BASE01",
+        use_tls: bool = True,
+    ):
         self.port = port
         self.baudrate = baudrate
         self.enable_azure_caster = enable_azure_caster
-        self.serial_conn = None
-        self.is_running = False
-        self.reader_thread = None
-        self.caster_thread = None
-        self.last_update_time = 0
-        self.packets_received = 0
-        self.caster_queue = queue.Queue(maxsize=200)
+        self.source_password = source_password
+        self.caster_host = caster_host
+        self.caster_port = caster_port
+        self.mountpoint = mountpoint
+        self.use_tls = use_tls
+        if enable_azure_caster and not source_password:
+            raise RuntimeError("NTRIP_SOURCE_PASSWORD is required when Base publishing is enabled")
 
-        # Telemetry State
-        self.state = {
+        self._running = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._serial: serial.Serial | None = None
+        self._serial_lock = threading.RLock()
+        self._state_lock = threading.RLock()
+        self._last_hppos_monotonic = 0.0
+        self._decoder = GNSSStreamDecoder()
+
+        self.base_cfg = BaseReceiverConfig(
+            mode=(env("BASE_MODE", "survey_in") or "survey_in").lower(),
+            measurement_rate_ms=env_int("BASE_MEASUREMENT_RATE_MS", 1000),
+            persist_to_bbr=env_bool("GNSS_PERSIST_TO_BBR", True),
+            survey_min_duration_s=env_int("BASE_SURVEY_MIN_DURATION_S", 600),
+            survey_accuracy_limit_m=env_float("BASE_SURVEY_ACCURACY_LIMIT_M", 0.5),
+            reset_survey_on_start=env_bool("BASE_RESET_SURVEY_ON_START", False),
+            fixed_latitude_deg=float(env("BASE_FIXED_LATITUDE_DEG")) if env("BASE_FIXED_LATITUDE_DEG") else None,
+            fixed_longitude_deg=float(env("BASE_FIXED_LONGITUDE_DEG")) if env("BASE_FIXED_LONGITUDE_DEG") else None,
+            fixed_height_ellipsoid_m=float(env("BASE_FIXED_HEIGHT_ELLIPSOID_M")) if env("BASE_FIXED_HEIGHT_ELLIPSOID_M") else None,
+            fixed_position_accuracy_m=env_float("BASE_FIXED_POSITION_ACCURACY_M", 0.02),
+            ubx_port=env("GNSS_UBX_PORT", "USB") or "USB",
+        )
+
+        self.source = (
+            NtripSourceWorker(
+                caster_host,
+                caster_port,
+                mountpoint,
+                source_password or "",
+                use_tls=use_tls,
+                reconnect_s=env_float("NTRIP_RECONNECT_S", 5.0),
+            )
+            if enable_azure_caster
+            else None
+        )
+
+        self.state: dict[str, Any] = {
             "connected": False,
             "port": port,
             "baudrate": baudrate,
-            "device_name": "u-blox GNSS / RTK Receiver",
-            "is_hardware": True,
+            "device_name": "u-blox ZED-F9P RTK Base",
+            "device_role": "BASE",
+            "base_mode": self.base_cfg.mode.upper(),
+            "configured": False,
             "latitude": None,
             "longitude": None,
             "altitude": None,
-            "speed_knots": 0.0,
-            "heading": 0.0,
-            "fix_quality": 0,
-            "fix_status_text": "SEARCHING FOR FIX...",
-            "satellites_used": 0,
-            "satellites_tracked": 0,
-            "hdop": None,
-            "pdop": None,
-            "vdop": None,
+            "height_ellipsoid_m": None,
             "horizontal_accuracy_m": None,
             "vertical_accuracy_m": None,
-            "last_sentence": "",
-            "last_timestamp": "",
-            "raw_stream_active": False,
-            "azure_caster": {
-                "host": DEFAULT_CASTER_HOST,
-                "port": DEFAULT_CASTER_PORT,
-                "mountpoint": DEFAULT_MOUNTPOINT,
-                "connected": False,
-                "bytes_sent": 0,
-                "status_text": "INITIALIZING"
+            "accuracy_source": None,
+            "speed_kmh": 0.0,
+            "heading": 0.0,
+            "fix_type": None,
+            "fix_type_text": "NO FIX",
+            "fix_status_text": "NO FIX",
+            "carrier_solution": 0,
+            "carrier_solution_text": "NO RTK",
+            "differential_solution": False,
+            "satellites_used": 0,
+            "hdop": None,
+            "pdop": None,
+            "survey_active": False,
+            "survey_valid": False,
+            "survey_duration_s": 0,
+            "survey_mean_accuracy_m": None,
+            "survey_observations": 0,
+            "rtcm_frames_seen": 0,
+            "rtcm_bytes_seen": 0,
+            "rtcm_message_counts": {},
+            "last_rtcm_utc": None,
+            "last_position_utc": None,
+            "last_error": None,
+            "reference": {
+                "latitude_deg": self.base_cfg.fixed_latitude_deg,
+                "longitude_deg": self.base_cfg.fixed_longitude_deg,
+                "height_ellipsoid_m": self.base_cfg.fixed_height_ellipsoid_m,
+                "configured_accuracy_m": self.base_cfg.fixed_position_accuracy_m if self.base_cfg.mode == "fixed" else None,
             },
-            "constellations": {
-                "GPS": {"tracked": 0, "used": 0},
-                "GLONASS": {"tracked": 0, "used": 0},
-                "GALILEO": {"tracked": 0, "used": 0},
-                "BEIDOU": {"tracked": 0, "used": 0}
-            },
-            "satellites_list": []
         }
-
-        self.satellites_db = {}
-        self.lock = threading.Lock()
 
     @staticmethod
-    def list_available_ports():
-        """List all detected system COM ports with descriptions and VID/PID"""
-        ports_info = []
+    def list_available_ports() -> list[dict[str, Any]]:
+        ports: list[dict[str, Any]] = []
         for p in serial.tools.list_ports.comports():
-            is_ublox = (p.vid == 0x1546) or ("u-blox" in (p.description or "").lower())
-            ports_info.append({
-                "device": p.device,
-                "name": p.name,
-                "description": p.description,
-                "hwid": p.hwid,
-                "vid": hex(p.vid) if p.vid else None,
-                "pid": hex(p.pid) if p.pid else None,
-                "is_ublox": is_ublox
-            })
-        return ports_info
-
-    def start(self):
-        """Start background serial reader and Azure NTRIP Caster threads"""
-        if self.is_running:
-            return
-        self.is_running = True
-
-        self.reader_thread = threading.Thread(target=self._read_loop, daemon=True)
-        self.reader_thread.start()
-
-        if self.enable_azure_caster:
-            self.caster_thread = threading.Thread(target=self._caster_uploader_loop, daemon=True)
-            self.caster_thread.start()
-
-    def stop(self):
-        """Stop threads and close connections"""
-        self.is_running = False
-        if self.serial_conn and self.serial_conn.is_open:
-            try:
-                self.serial_conn.close()
-            except Exception:
-                pass
-
-    def _get_fix_text(self, qual):
-        qual_map = {
-            0: "NO FIX",
-            1: "3D SINGLE GNSS",
-            2: "DGPS / DIFFERENTIAL",
-            4: "RTK FIXED (HIGH PRECISION)",
-            5: "RTK FLOAT",
-            6: "DEAD RECKONING"
-        }
-        return qual_map.get(qual, "FIX ACTIVE")
-
-    def _estimate_accuracy(self, qual, hdop):
-        if qual == 4:
-            return round(0.006 * max(hdop, 0.5), 3)
-        elif qual == 5:
-            return round(0.12 * max(hdop, 0.5), 3)
-        elif qual == 2:
-            return round(0.45 * max(hdop, 0.5), 3)
-        else:
-            return round(1.8 * max(hdop, 0.5), 3)
-
-    # -------------------------------------------------------------
-    # 1. AZURE NTRIP CASTER STREAMING THREAD
-    # -------------------------------------------------------------
-    def _connect_azure_caster(self):
-        """Establish TLS NTRIP 1.0 Source connection to rtk.prosperinfotech.com:443"""
-        try:
-            raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            raw_sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-            raw_sock.settimeout(10.0)
-            context = ssl.create_default_context()
-            sock = context.wrap_socket(raw_sock, server_hostname=DEFAULT_CASTER_HOST)
-            sock.connect((DEFAULT_CASTER_HOST, DEFAULT_CASTER_PORT))
-
-            auth_header = (
-                f"SOURCE {DEFAULT_SOURCE_PASSWORD} /{DEFAULT_MOUNTPOINT}\r\n"
-                f"Source-Agent: NTRIP ProsperBaseServer/2.0\r\n"
-                f"STR: \r\n\r\n"
+            desc = p.description or ""
+            hwid = p.hwid or ""
+            manufacturer = p.manufacturer or ""
+            text = f"{desc} {hwid} {manufacturer}".lower()
+            ports.append(
+                {
+                    "device": p.device,
+                    "description": desc,
+                    "manufacturer": manufacturer,
+                    "hwid": hwid,
+                    "is_ublox": "u-blox" in text or "ublox" in text or "vid:pid=1546" in text,
+                }
             )
-            sock.sendall(auth_header.encode('ascii'))
-            resp = sock.recv(1024).decode('ascii', errors='ignore')
+        return ports
 
-            if "ICY 200 OK" in resp or "200 OK" in resp:
-                sock.settimeout(None)  # Infinite / non-blocking timeout for continuous live streaming
-                print(f"[AZURE CASTER] [OK] Live connection established to {DEFAULT_CASTER_HOST}:{DEFAULT_CASTER_PORT}/{DEFAULT_MOUNTPOINT}")
-                return sock
-            else:
-                first_line = resp.strip().splitlines()[0] if resp else 'Unknown error'
-                print(f"[AZURE CASTER ERROR]: {first_line}")
-                if "409" in first_line:
-                    with self.lock:
-                        self.state["azure_caster"]["status_text"] = "WAITING FOR CASTER MOUNTPOINT RELEASE (409)"
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._running.set()
+        if self.source:
+            self.source.start()
+        self._thread = threading.Thread(target=self._serial_loop, name="base-zedf9p", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running.clear()
+        with self._serial_lock:
+            if self._serial:
                 try:
-                    sock.close()
+                    self._serial.close()
                 except Exception:
                     pass
-                return None
-        except Exception as e:
-            print(f"[AZURE CASTER] Reconnect attempt failed: {e}")
-            return None
+                self._serial = None
+        if self._thread:
+            self._thread.join(timeout=5)
+        if self.source:
+            self.source.stop()
+        self._update(connected=False)
 
-    def _caster_uploader_loop(self):
-        """Continuously streams raw RTCM3/GNSS packets to Azure NTRIP Caster"""
-        sock = None
-        total_sent = 0
+    def get_snapshot(self) -> dict[str, Any]:
+        with self._state_lock:
+            snap = dict(self.state)
+            snap["rtcm_message_counts"] = dict(self.state["rtcm_message_counts"])
+            snap["reference"] = dict(self.state["reference"])
+        snap["azure_caster"] = self.source.snapshot() if self.source else {
+            "connected": False,
+            "status_text": "DISABLED",
+            "host": self.caster_host,
+            "port": self.caster_port,
+            "mountpoint": self.mountpoint,
+            "bytes_sent": 0,
+            "frames_sent": 0,
+        }
+        return snap
 
-        while self.is_running:
+    def _update(self, **kwargs: Any) -> None:
+        with self._state_lock:
+            self.state.update(kwargs)
+
+    def _serial_loop(self) -> None:
+        reconnect_s = env_float("GNSS_RECONNECT_S", 5.0)
+        while self._running.is_set():
             try:
-                if sock is None:
-                    with self.lock:
-                        self.state["azure_caster"]["connected"] = False
-                        self.state["azure_caster"]["status_text"] = "CONNECTING TO AZURE..."
-
-                    sock = self._connect_azure_caster()
-                    if sock is None:
-                        time.sleep(5)
-                        continue
-
-                    with self.lock:
-                        self.state["azure_caster"]["connected"] = True
-                        self.state["azure_caster"]["status_text"] = "STREAMING TO AZURE"
-
-                # Wait for next chunk of raw bytes from serial reader
-                try:
-                    data = self.caster_queue.get(timeout=2.0)
-                except queue.Empty:
-                    continue
-
-                sock.sendall(data)
-                total_sent += len(data)
-
-                with self.lock:
-                    self.state["azure_caster"]["bytes_sent"] = total_sent
-
-            except (socket.error, BrokenPipeError, ssl.SSLError) as net_err:
-                print(f"[AZURE CASTER] Disconnected: {net_err}. Reconnecting in 3s...")
-                with self.lock:
-                    self.state["azure_caster"]["connected"] = False
-                    self.state["azure_caster"]["status_text"] = "RECONNECTING"
-                if sock:
-                    try:
-                        sock.close()
-                    except Exception:
-                        pass
-                sock = None
-                time.sleep(3)
-            except Exception as e:
-                print(f"[AZURE CASTER ERROR]: {e}")
-                time.sleep(3)
-
-        if sock:
-            try:
-                sock.close()
-            except Exception:
-                pass
-
-    # -------------------------------------------------------------
-    # 2. SERIAL PORT READER & NMEA PARSER
-    # -------------------------------------------------------------
-    def _read_loop(self):
-        """Reads serial port, feeds Azure Caster queue, and parses NMEA for dashboard"""
-        line_buffer = bytearray()
-
-        while self.is_running:
-            try:
-                if not self.serial_conn or not self.serial_conn.is_open:
-                    self.serial_conn = serial.Serial(self.port, self.baudrate, timeout=1.5)
-                    with self.lock:
-                        self.state["connected"] = True
-                        self.state["raw_stream_active"] = True
-                    print(f"[BASE SERIAL] Connected to Base receiver on {self.port} @ {self.baudrate}")
-
-                # Read available raw bytes from receiver
-                raw_chunk = self.serial_conn.read(self.serial_conn.in_waiting or 1)
-                if not raw_chunk:
-                    time.sleep(0.01)
-                    continue
-
-                self.packets_received += 1
-                self.last_update_time = time.time()
-
-                # Push raw chunk directly to Azure NTRIP Caster queue
-                if self.enable_azure_caster:
-                    try:
-                        self.caster_queue.put_nowait(raw_chunk)
-                    except queue.Full:
+                self._open_and_configure()
+                self._read_until_error()
+            except Exception as exc:
+                self._update(connected=False, configured=False, last_error=str(exc))
+                with self._serial_lock:
+                    if self._serial:
                         try:
-                            self.caster_queue.get_nowait()
-                            self.caster_queue.put_nowait(raw_chunk)
+                            self._serial.close()
                         except Exception:
                             pass
+                        self._serial = None
+                if self._running.is_set():
+                    time.sleep(reconnect_s)
 
-                # Parse NMEA lines from byte stream
-                line_buffer.extend(raw_chunk)
-                while b'\n' in line_buffer:
-                    idx = line_buffer.index(b'\n')
-                    line_bytes = line_buffer[:idx]
-                    del line_buffer[:idx + 1]
+    def _open_and_configure(self) -> None:
+        ser = serial.Serial(self.port, self.baudrate, timeout=0.5, write_timeout=2)
+        with self._serial_lock:
+            self._serial = ser
+        self._decoder = GNSSStreamDecoder()
+        self._update(connected=True, last_error=None)
+        if env_bool("GNSS_AUTO_CONFIGURE", True):
+            configure_base(ser, self.base_cfg)
+        self._update(configured=True)
 
-                    try:
-                        raw_line = line_bytes.decode('ascii', errors='ignore').strip()
-                        if raw_line.startswith('$'):
-                            self._parse_nmea_sentence(raw_line)
-                    except Exception:
-                        pass
+    def _read_until_error(self) -> None:
+        assert self._serial is not None
+        while self._running.is_set() and self._serial.is_open:
+            raw = self._serial.read(self._serial.in_waiting or 1)
+            if not raw:
+                continue
+            for event in self._decoder.feed(raw):
+                if event.kind == "rtcm":
+                    self._handle_rtcm(event.data)
+                elif event.kind == "ubx":
+                    self._handle_ubx(event.data)
+                elif event.kind == "nmea":
+                    self._handle_nmea(event.data)
 
-            except serial.SerialException as se:
-                print(f"[BASE SERIAL ERROR] Port {self.port} lost: {se}. Retrying in 2s...")
-                with self.lock:
-                    self.state["connected"] = False
-                    self.state["raw_stream_active"] = False
-                if self.serial_conn:
-                    try:
-                        self.serial_conn.close()
-                    except Exception:
-                        pass
-                self.serial_conn = None
-                time.sleep(2)
-            except Exception as e:
-                time.sleep(0.05)
+    def _handle_rtcm(self, frame: bytes) -> None:
+        msg_type = rtcm_message_type(frame)
+        now = _utc_now()
+        with self._state_lock:
+            counts = dict(self.state["rtcm_message_counts"])
+            if msg_type is not None:
+                counts[str(msg_type)] = int(counts.get(str(msg_type), 0)) + 1
+            self.state["rtcm_message_counts"] = counts
+            self.state["rtcm_frames_seen"] = int(self.state["rtcm_frames_seen"]) + 1
+            self.state["rtcm_bytes_seen"] = int(self.state["rtcm_bytes_seen"]) + len(frame)
+            self.state["last_rtcm_utc"] = now
+        if self.source:
+            self.source.submit(frame)
 
-    def _parse_nmea_sentence(self, raw_line):
-        with self.lock:
-            self.state["last_sentence"] = raw_line
-            self.state["raw_stream_active"] = True
+    def _handle_ubx(self, frame: bytes) -> None:
+        pvt = parse_ubx_nav_pvt(frame)
+        if pvt:
+            recent_hp = time.monotonic() - self._last_hppos_monotonic < 2.5
+            values = {
+                "speed_kmh": pvt["speed_kmh"],
+                "heading": pvt["heading"],
+                "fix_type": pvt["fix_type"],
+                "fix_type_text": pvt["fix_type_text"],
+                "fix_status_text": pvt["carrier_solution_text"] if pvt["carrier_solution"] else pvt["fix_type_text"],
+                "carrier_solution": pvt["carrier_solution"],
+                "carrier_solution_text": pvt["carrier_solution_text"],
+                "differential_solution": pvt["differential_solution"],
+                "satellites_used": pvt["satellites_used"],
+                "pdop": pvt["pdop"],
+                "last_position_utc": _utc_now(),
+            }
+            if not recent_hp:
+                values.update(
+                    latitude=pvt["latitude"],
+                    longitude=pvt["longitude"],
+                    altitude=pvt["altitude"],
+                    height_ellipsoid_m=pvt["height_ellipsoid_m"],
+                    horizontal_accuracy_m=pvt["horizontal_accuracy_m"],
+                    vertical_accuracy_m=pvt["vertical_accuracy_m"],
+                    accuracy_source="UBX-NAV-PVT",
+                )
+            self._update(**values)
+            return
 
-        if raw_line.startswith(('$GNGGA', '$GPGGA')):
-            try:
-                msg = pynmea2.parse(raw_line)
-                with self.lock:
-                    if msg.latitude and msg.longitude:
-                        self.state["latitude"] = float(msg.latitude)
-                        self.state["longitude"] = float(msg.longitude)
-                    if hasattr(msg, 'altitude') and msg.altitude is not None:
-                        try:
-                            self.state["altitude"] = float(msg.altitude)
-                        except Exception:
-                            pass
-                    if hasattr(msg, 'num_sats') and msg.num_sats:
-                        try:
-                            self.state["satellites_used"] = int(msg.num_sats)
-                        except Exception:
-                            pass
-                    if hasattr(msg, 'gps_qual') and msg.gps_qual is not None:
-                        try:
-                            q = int(msg.gps_qual)
-                            self.state["fix_quality"] = q
-                            self.state["fix_status_text"] = self._get_fix_text(q)
-                        except Exception:
-                            pass
-                    if hasattr(msg, 'horizontal_dil') and msg.horizontal_dil:
-                        try:
-                            self.state["hdop"] = float(msg.horizontal_dil)
-                        except Exception:
-                            pass
+        hp = parse_ubx_nav_hpposllh(frame)
+        if hp:
+            self._last_hppos_monotonic = time.monotonic()
+            self._update(**hp, last_position_utc=_utc_now())
+            return
 
-                    self.state["horizontal_accuracy_m"] = self._estimate_accuracy(
-                        self.state["fix_quality"], self.state["hdop"]
-                    )
-                    self.state["vertical_accuracy_m"] = round(self.state["horizontal_accuracy_m"] * 1.8, 3)
-                    self.state["last_timestamp"] = str(getattr(msg, 'timestamp', ''))
-            except Exception:
-                pass
+        svin = parse_ubx_nav_svin(frame)
+        if svin:
+            self._update(
+                survey_active=svin["survey_active"],
+                survey_valid=svin["survey_valid"],
+                survey_duration_s=svin["survey_duration_s"],
+                survey_mean_accuracy_m=svin["mean_accuracy_m"],
+                survey_observations=svin["observations"],
+            )
 
-        elif raw_line.startswith(('$GNRMC', '$GPRMC')):
-            try:
-                msg = pynmea2.parse(raw_line)
-                with self.lock:
-                    if hasattr(msg, 'spd_over_grnd') and msg.spd_over_grnd is not None:
-                        try:
-                            self.state["speed_knots"] = float(msg.spd_over_grnd)
-                        except Exception:
-                            pass
-                    if hasattr(msg, 'true_course') and msg.true_course is not None:
-                        try:
-                            self.state["heading"] = float(msg.true_course)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-
-        elif raw_line.startswith(('$GNGSA', '$GPGSA')):
-            try:
-                msg = pynmea2.parse(raw_line)
-                with self.lock:
-                    if hasattr(msg, 'pdop') and msg.pdop:
-                        try:
-                            self.state["pdop"] = float(msg.pdop)
-                        except Exception:
-                            pass
-                    if hasattr(msg, 'vdop') and msg.vdop:
-                        try:
-                            self.state["vdop"] = float(msg.vdop)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-
-        elif any(raw_line.startswith(p) for p in ('$GPGSV', '$GLGSV', '$GAGSV', '$GBGSV')):
-            try:
-                talker = raw_line[1:3]
-                sys_name = {"GP": "GPS", "GL": "GLONASS", "GA": "GALILEO", "GB": "BEIDOU"}.get(talker, "GNSS")
-                parts = raw_line.split('*')[0].split(',')
-                if len(parts) >= 4:
-                    try:
-                        total_sats = int(parts[3])
-                        with self.lock:
-                            self.state["constellations"][sys_name]["tracked"] = total_sats
-                    except Exception:
-                        pass
-
-                    idx = 4
-                    while idx + 3 < len(parts):
-                        prn_str = parts[idx].strip()
-                        el_str = parts[idx+1].strip()
-                        az_str = parts[idx+2].strip()
-                        snr_str = parts[idx+3].strip()
-                        idx += 4
-
-                        if prn_str:
-                            try:
-                                prn = f"{talker[1]}{prn_str.zfill(2)}"
-                                snr = int(snr_str) if snr_str and snr_str.isdigit() else 0
-                                el = int(el_str) if el_str and el_str.isdigit() else 0
-                                az = int(az_str) if az_str and az_str.isdigit() else 0
-
-                                self.satellites_db[prn] = {
-                                    "prn": prn,
-                                    "system": sys_name,
-                                    "snr": snr,
-                                    "elevation": el,
-                                    "azimuth": az,
-                                    "status": "USED" if snr > 35 else "TRACKED",
-                                    "updated": time.time()
-                                }
-                            except Exception:
-                                pass
-            except Exception:
-                pass
-
-    def get_snapshot(self):
-        """Return a clean copy of the live telemetry state"""
-        now = time.time()
-        with self.lock:
-            # Active sats
-            active_sats = [s for s in self.satellites_db.values() if (now - s["updated"]) < 10.0]
-            self.state["satellites_list"] = sorted(active_sats, key=lambda x: x["snr"], reverse=True)
-            self.state["satellites_tracked"] = len(active_sats)
-            self.state["packets_received"] = self.packets_received
-            return dict(self.state)
+    def _handle_nmea(self, data: bytes) -> None:
+        # Fallback only; the production accuracy source is UBX NAV-PVT/HPPOSLLH.
+        text = data.decode("ascii", errors="ignore").strip()
+        try:
+            if text.startswith(("$GNGGA", "$GPGGA")):
+                msg = pynmea2.parse(text)
+                values: dict[str, Any] = {}
+                if msg.latitude and msg.longitude and time.monotonic() - self._last_hppos_monotonic >= 2.5:
+                    values.update(latitude=float(msg.latitude), longitude=float(msg.longitude), accuracy_source="NMEA-FALLBACK")
+                if getattr(msg, "horizontal_dil", None):
+                    values["hdop"] = float(msg.horizontal_dil)
+                if getattr(msg, "num_sats", None):
+                    values["satellites_used"] = int(msg.num_sats)
+                if values:
+                    self._update(**values)
+        except Exception:
+            pass

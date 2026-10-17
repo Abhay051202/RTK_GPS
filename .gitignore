@@ -28,3 +28,8 @@ venv/
 ENV/
 backend/rover_readings.sqlite3*
 .ppt-build/
+
+# Prosper RTK local secrets / runtime config
+.env
+backend/.env
+*.env.local

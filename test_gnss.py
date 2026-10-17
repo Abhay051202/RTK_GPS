@@ -1,25 +1,44 @@
-import serial
-import pynmea2
+"""ZED-F9P serial smoke test showing UBX high-precision state and RTCM frames."""
+from __future__ import annotations
+import os
+import sys
 import time
 
-print("Opening COM3 at 115200 baud...")
-try:
-    ser = serial.Serial('COM3', 115200, timeout=1.5)
-    print("Successfully connected to COM3!")
-    
-    for i in range(20):
-        raw_line = ser.readline().decode('ascii', errors='replace').strip()
-        if not raw_line:
-            continue
-        print("RAW:", raw_line)
-        if raw_line.startswith('$GNGGA') or raw_line.startswith('$GPGGA'):
-            try:
-                msg = pynmea2.parse(raw_line)
-                print(f"--> [FIX PARSED] Lat: {msg.latitude:.7f}, Lng: {msg.longitude:.7f}, Alt: {msg.altitude} {msg.altitude_units}, Sats: {msg.num_sats}, Quality: {msg.gps_qual}, HDOP: {msg.horizontal_dil}")
-            except Exception as e:
-                print("Parse error:", e)
-        time.sleep(0.05)
-    ser.close()
-    print("Test complete.")
-except Exception as e:
-    print("Failed to open COM3:", e)
+import serial
+import serial.tools.list_ports
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "backend"))
+from gnss_protocol import GNSSStreamDecoder, parse_ubx_nav_hpposllh, parse_ubx_nav_pvt, rtcm_message_type
+
+
+def detect(default=None):
+    explicit = os.environ.get("GNSS_PORT")
+    if explicit:
+        return explicit
+    for p in serial.tools.list_ports.comports():
+        text = f"{p.description or ''} {p.hwid or ''} {p.manufacturer or ''}".lower()
+        if "u-blox" in text or "ublox" in text or "vid:pid=1546" in text:
+            return p.device
+    return default or ("COM3" if os.name == "nt" else "/dev/ttyACM0")
+
+
+port = sys.argv[1] if len(sys.argv) > 1 else detect()
+baud = int(os.environ.get("GNSS_BAUD", "115200"))
+print(f"Opening {port} @ {baud}. Ctrl+C to stop.")
+decoder = GNSSStreamDecoder()
+counts = {}
+with serial.Serial(port, baud, timeout=0.5) as ser:
+    while True:
+        raw = ser.read(ser.in_waiting or 1)
+        for event in decoder.feed(raw):
+            if event.kind == "rtcm":
+                mt = rtcm_message_type(event.data)
+                counts[mt] = counts.get(mt, 0) + 1
+            elif event.kind == "ubx":
+                hp = parse_ubx_nav_hpposllh(event.data)
+                pvt = parse_ubx_nav_pvt(event.data)
+                if hp:
+                    print(f"HPPOS lat={hp['latitude']:.9f} lon={hp['longitude']:.9f} hAcc={hp['horizontal_accuracy_m']:.4f}m")
+                elif pvt:
+                    print(f"PVT {pvt['carrier_solution_text']} sats={pvt['satellites_used']} speed={pvt['speed_kmh']:.2f}km/h hAcc={pvt['horizontal_accuracy_m']:.3f}m RTCM={counts}")
+        time.sleep(0.002)

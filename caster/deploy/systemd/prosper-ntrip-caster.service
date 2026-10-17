@@ -1,0 +1,24 @@
+[Unit]
+Description=Prosper NTRIP Caster
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=prosperrtk
+Group=prosperrtk
+EnvironmentFile=/etc/prosper-ntrip/caster.env
+WorkingDirectory=/opt/prosper-ntrip-caster
+ExecStart=/opt/prosper-ntrip-caster/.venv/bin/prosper-ntrip-caster --config /etc/prosper-ntrip/caster.yaml
+Restart=always
+RestartSec=3
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/etc/prosper-ntrip
+
+[Install]
+WantedBy=multi-user.target

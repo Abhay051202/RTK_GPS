@@ -78,6 +78,13 @@ export default function LiveMap({ base, rover, baseLive, roverLive }) {
     }
   }, [baseLive, base?.latitude, base?.longitude, base?.fix_status_text, base?.port]);
 
+
+  // Start a separate trail whenever the selected Reach Stacker changes.
+  useEffect(() => {
+    trailPts.current = [];
+    layers.current.trail?.setLatLngs([]);
+  }, [rover?.device_id]);
+
   // Rover marker, trail, baseline
   useEffect(() => {
     const map = mapRef.current;

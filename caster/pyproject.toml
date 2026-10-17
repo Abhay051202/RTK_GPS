@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prosper-ntrip-caster"
+version = "1.1.0"
+description = "Prosper Infotech lightweight authenticated TLS NTRIP caster for RTK deployments"
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6.0,<7"]
+
+[project.scripts]
+prosper-ntrip-caster = "prosper_ntrip_caster.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

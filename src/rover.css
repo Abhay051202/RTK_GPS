@@ -296,3 +296,19 @@ td {
     height: 380px;
   }
 }
+
+.rover-select-wrap { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.rover-select-wrap select { background:#18263c; color:#e2e8f0; border:1px solid #334766; border-radius:7px; padding:9px 12px; font-weight:600; min-width:170px; }
+.rtk-badge { padding:9px 14px; border-radius:8px; font-weight:800; font-size:12px; letter-spacing:.5px; }
+.rtk-badge.fixed { background:#064e3b; color:#86efac; border:1px solid #10b981; box-shadow:0 0 16px rgba(16,185,129,.15); }
+.rtk-badge.float { background:#78350f; color:#fde68a; border:1px solid #f59e0b; }
+.rtk-badge.nofix { background:#3f1d2e; color:#fda4af; border:1px solid #be123c; }
+.health-strip { display:flex; gap:10px; flex-wrap:wrap; margin:0 0 14px; }
+.health { font-size:11px; font-weight:800; letter-spacing:.4px; padding:7px 10px; border-radius:7px; }
+.health.ok { background:#052e2b; color:#6ee7b7; border:1px solid #0f766e; }
+.health.warn { background:#422006; color:#fcd34d; border:1px solid #a16207; }
+.health.bad { background:#3f1d2e; color:#fda4af; border:1px solid #9f1239; }
+.metric-good { border-color:#0f766e !important; }
+.metric-good strong { color:#6ee7b7 !important; }
+.metric-warn { border-color:#92400e !important; }
+.metric-warn strong { color:#fbbf24 !important; }
